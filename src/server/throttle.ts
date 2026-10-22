@@ -15,6 +15,9 @@ function limitPerMinute(): number {
 }
 
 export function clientKey(request: Request): string {
+  // Cloudflare sets cf-connecting-ip and clients can't spoof it there.
+  const cf = request.headers.get("cf-connecting-ip");
+  if (cf) return cf;
   const forwarded = request.headers.get("x-forwarded-for")?.split(",")[0]?.trim();
   return forwarded || request.headers.get("x-real-ip") || "local";
 }

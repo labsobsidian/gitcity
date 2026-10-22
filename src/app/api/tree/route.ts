@@ -1,4 +1,5 @@
 import { validateRepoRef } from "@/lib/github/parse-url";
+import { withEdgeCache } from "@/server/edge-cache";
 import { AppError, errorResponse } from "@/server/errors";
 import { getRepoTree, resolveBudget } from "@/server/github";
 import { throttle } from "@/server/throttle";
@@ -9,7 +10,11 @@ export const runtime = "nodejs";
  * GET /api/tree?owner=&repo=&sha=<40-hex>&budget= → RepoTree.
  * Keyed by an immutable commit SHA, so responses are cached aggressively.
  */
-export async function GET(request: Request) {
+export function GET(request: Request) {
+  return withEdgeCache(request, () => handle(request));
+}
+
+async function handle(request: Request) {
   try {
     throttle(request);
     const params = new URL(request.url).searchParams;

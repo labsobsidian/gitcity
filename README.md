@@ -38,6 +38,8 @@ npm run dev                  # http://localhost:3000
 | `npm run build` / `npm start` | Production build / server |
 | `npm test` | Unit tests (URL parsing, normalization, budgeting, layout, GitHub client) |
 | `npm run typecheck` | TypeScript |
+| `npm run preview` | Build for Cloudflare and run it locally in the Workers runtime |
+| `npm run deploy` | Build for Cloudflare and deploy the Worker |
 
 Opt-in live tests hit the real GitHub API:
 
@@ -57,8 +59,8 @@ All optional. Server-side only, never sent to the browser.
 | `GITCITY_BUILDING_BUDGET` | `6000` | Default buildings per city (clamped to 200 – 15,000). |
 | `GITCITY_RATE_LIMIT_PER_MINUTE` | `40` | Per-client requests per minute to the API routes (best effort, per instance). |
 
-A city costs 3 GitHub requests (repo metadata, commit SHA, recursive tree). Without a token, a single server IP gets about
-20 cities an hour, so set one for any shared deployment.
+A city costs 3 GitHub requests (repo metadata, commit SHA, recursive tree). Without a token GitHub allows 60 requests an
+hour per IP, and on Cloudflare the outbound IPs are shared with other Workers, so **a deployed instance needs a token**.
 
 ## Architecture
 
@@ -72,7 +74,7 @@ src/
     city/random.ts          Seeded hashing / PRNG
     languages.ts            Extension → language → neon color
     types.ts                Wire contract (RepoSummary, RepoTree, errors)
-  server/                   GitHub REST client, caches, throttling (server-only)
+  server/                   GitHub REST client, in-process + edge caches, throttling (server-only)
   app/api/repo              GET ?repo=…                → metadata + resolved commit SHA
   app/api/tree              GET ?owner&repo&sha&budget → normalized files + stats (immutable per SHA)
   components/scene/         React Three Fiber renderer
@@ -88,8 +90,8 @@ src/
 1. The browser validates the input, then calls `/api/repo`, which fetches metadata, refuses private repositories and resolves
    the ref to a 40-character commit SHA.
 2. It then calls `/api/tree` with that SHA. The server downloads the recursive tree (size-capped), normalizes it and applies
-   the building budget. The response is keyed by an immutable SHA, so it's cached for a long time (in-process LRU plus
-   `Cache-Control` for any CDN in front).
+   the building budget. The response is keyed by an immutable SHA, so it's cached for a long time: in-process LRU, plus
+   Cloudflare's Cache API in each data center (`src/server/edge-cache.ts`).
 3. The browser streams the tree (showing bytes received), runs `generateCity`, and hands the model to the renderer.
 
 ### Mapping
@@ -120,37 +122,24 @@ submodules and symlinks. The stats panel lists what was skipped.
 - Private repositories are refused even when the token can see them (verified by the opt-in live test).
 - Nothing is stored. Caches are in memory and keyed by public commit SHAs.
 
-## Deploying to Google Cloud Run
+## Deploying to Cloudflare Workers
 
-The app ships as a container (`output: "standalone"`; see `Dockerfile`). The image build runs the unit tests and fails on a
-red test.
+GitCity runs on Cloudflare Workers through the [OpenNext Cloudflare adapter](https://opennext.js.org/cloudflare).
+Configuration lives in `wrangler.jsonc` (worker `gitcity`) and `open-next.config.ts`. The Worker is about 1 MB gzipped,
+inside the free plan's 3 MB limit, and needs no KV, R2 or D1.
 
 ```bash
-# One-time: pick a project and enable the APIs
-gcloud config set project YOUR_PROJECT
-gcloud services enable run.googleapis.com cloudbuild.googleapis.com artifactregistry.googleapis.com
-
-# Optional but recommended: store the GitHub token in Secret Manager
-printf '%s' "$GITHUB_TOKEN" | gcloud secrets create gitcity-github-token --data-file=-
-
-# Build with Cloud Build and deploy
-gcloud run deploy gitcity \
-  --source . \
-  --region us-central1 \
-  --allow-unauthenticated \
-  --port 8080 \
-  --memory 512Mi --cpu 1 \
-  --min-instances 0 --max-instances 4 \
-  --concurrency 40 --timeout 60 \
-  --set-secrets GITHUB_TOKEN=gitcity-github-token:latest
+npx wrangler login                       # once
+npx wrangler secret put GITHUB_TOKEN     # fine-grained token, public repositories read-only
+npm run deploy                           # → https://gitcity.<your-subdomain>.workers.dev
 ```
 
-Notes:
-
-- `--min-instances 0` scales to zero when idle. Cold starts take about 1–2 s.
-- Caches are per instance. For heavy traffic, put Cloud CDN (via a load balancer) in front: `/api/tree` responses are
-  immutable per SHA and already send `s-maxage=86400`.
-- Locally: `docker build -t gitcity . && docker run -p 8080:8080 -e GITHUB_TOKEN=… gitcity`.
+- Set `account_id` in `wrangler.jsonc` to your own account (or remove it and pick one interactively).
+- Non-secret settings (`GITCITY_BUILDING_BUDGET`, `GITCITY_RATE_LIMIT_PER_MINUTE`) are `vars` in `wrangler.jsonc`.
+- `npm run preview` runs the production build locally in `workerd` before you ship.
+- `/api/tree` responses (immutable per commit SHA) are stored in each data center's Cache API, so repeat visits to the same
+  city skip GitHub entirely (`CF-Cache-Status: HIT`). This works on `*.workers.dev` as well as custom domains.
+- For abuse protection beyond the per-isolate throttle, add a Cloudflare rate-limiting rule on `/api/*`.
 
 ## Known limitations
 
@@ -159,8 +148,8 @@ Notes:
 - **Refs with slashes** in `/tree/<ref>` URLs are ambiguous, so only the first segment is used. Use `owner/repo@feature/x`
   instead.
 - **Size, not complexity**: height is file size in bytes. Line counts would need one request per file.
-- **Rate limits** are global to the server token. The in-process throttle is per instance, so add a Cloud Armor rule for real
-  abuse protection.
+- **Rate limits** are global to the server token. The in-process throttle is per Worker isolate, so add a Cloudflare
+  rate-limiting rule for real abuse protection.
 - The UI is dark by design: the cyberpunk palette is the product, and the app sets `color-scheme: dark`.
 
 ## Roadmap

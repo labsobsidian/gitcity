@@ -1,0 +1,19 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "gitcity",
+  "account_id": "17a87322eb2b627ceff93bf4cfd5d173",
+  "main": ".open-next/worker.js",
+  "compatibility_date": "2026-10-01",
+  "compatibility_flags": ["nodejs_compat", "global_fetch_strictly_public"],
+  "assets": {
+    "directory": ".open-next/assets",
+    "binding": "ASSETS"
+  },
+  "workers_dev": true,
+  "observability": { "enabled": true },
+  "vars": {
+    "GITCITY_BUILDING_BUDGET": "6000",
+    "GITCITY_RATE_LIMIT_PER_MINUTE": "40"
+  }
+  // GITHUB_TOKEN is a secret: `npx wrangler secret put GITHUB_TOKEN`
+}

@@ -8,8 +8,6 @@ const securityHeaders = [
 ];
 
 const nextConfig: NextConfig = {
-  // Self-contained server bundle for the Cloud Run container (see Dockerfile).
-  output: "standalone",
   reactStrictMode: true,
   poweredByHeader: false,
   async headers() {

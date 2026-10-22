@@ -82,10 +82,11 @@ export function StatsPanel({ summary, tree, demo, demoName }: Props) {
             />
             <Stat label="Directories" value={formatCount(stats.directories)} sub={`${formatCount(tree.files.length)} buildings`} />
             <Stat label="Primary language" value={primary} sub={summary?.primaryLanguage ? "per GitHub" : "by bytes"} />
+            {/* GitHub reports size 0 until it has computed it (e.g. brand-new repos); fall back to what we mapped. */}
             <Stat
               label="Repository size"
-              value={summary ? formatBytes(summary.sizeKb * 1024) : formatBytes(stats.includedBytes)}
-              sub={`${formatBytes(stats.includedBytes)} mapped`}
+              value={summary && summary.sizeKb > 0 ? formatBytes(summary.sizeKb * 1024) : formatBytes(stats.includedBytes)}
+              sub={summary && summary.sizeKb > 0 ? `${formatBytes(stats.includedBytes)} mapped` : "source mapped"}
             />
           </div>
 

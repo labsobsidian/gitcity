@@ -11,8 +11,10 @@ import { formatRepoRef, parseRepoInput } from "@/lib/github/parse-url";
 import type { ApiErrorCode, RepoSummary, RepoTree } from "@/lib/types";
 import type { CameraApi } from "./scene/CameraRig";
 import { createHoverStore } from "./scene/hoverStore";
+import { createFlyStore, isTypingTarget, type Picker } from "./scene/input";
 import { cityLabels, createLabelRegistry } from "./scene/labels";
 import { ControlsDock } from "./ui/ControlsDock";
+import { ControlsHelp, FlyHud } from "./ui/FlightUi";
 import { HoverTooltip } from "./ui/HoverTooltip";
 import { Inspector } from "./ui/Inspector";
 import { LabelLayer } from "./ui/LabelLayer";
@@ -71,9 +73,13 @@ export function CityExperience() {
   const [showLabels, setShowLabels] = useState(true);
   const [autoRotate, setAutoRotate] = useState(true);
   const [inputValue, setInputValue] = useState("");
+  const [flying, setFlying] = useState(false);
+  const [helpOpen, setHelpOpen] = useState(false);
   const reducedMotion = useReducedMotion();
   const hoverStore = useMemo(createHoverStore, []);
   const labelRegistry = useMemo(createLabelRegistry, []);
+  const flyStore = useMemo(createFlyStore, []);
+  const picker = useRef<Picker | null>(null);
   const cameraRef = useRef<CameraApi | null>(null);
   const abortRef = useRef<AbortController | null>(null);
 
@@ -109,6 +115,7 @@ export function CityExperience() {
       if (controller.signal.aborted) return;
       const city = generateCity({ name: summary.fullName, files: tree.files });
       setSelected(null);
+      setFlying(false);
       setData({ key: `${summary.fullName}@${summary.commitSha}#${tree.budget}`, city, tree, summary, demo: false });
       setPhase({ kind: "idle" });
       if (options.updateUrl !== false) {
@@ -137,20 +144,25 @@ export function CityExperience() {
     setPhase({ kind: "idle" });
   };
 
-  // Keyboard shortcuts (ignored while typing).
+  const helpOpenRef = useRef(helpOpen);
+  helpOpenRef.current = helpOpen;
+
+  // Toggle shortcuts (ignored while typing). Camera movement keys are handled
+  // continuously inside the camera rig.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      const el = e.target as HTMLElement | null;
-      if (el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.isContentEditable)) return;
-      if (e.metaKey || e.ctrlKey || e.altKey) return;
-      const cam = cameraRef.current;
+      if (isTypingTarget(e.target) || e.metaKey || e.ctrlKey || e.altKey || e.repeat) return;
       switch (e.key) {
         case "Escape":
-          setSelected(null);
+          // Browsers release pointer lock on Esc themselves; here it closes help or deselects.
+          if (helpOpenRef.current) setHelpOpen(false);
+          else setSelected(null);
           break;
+        case "h":
+        case "H":
         case "r":
         case "R":
-          cam?.reset();
+          cameraRef.current?.reset();
           break;
         case "l":
         case "L":
@@ -160,21 +172,13 @@ export function CityExperience() {
         case "O":
           setAutoRotate((v) => !v);
           break;
-        case "+":
-        case "=":
-          cam?.zoom(1);
+        case "f":
+        case "F":
+          setHeroOpen(false);
+          setFlying((v) => !v);
           break;
-        case "-":
-        case "_":
-          cam?.zoom(-1);
-          break;
-        case "q":
-        case "Q":
-          cam?.rotate(-1);
-          break;
-        case "e":
-        case "E":
-          cam?.rotate(1);
+        case "?":
+          setHelpOpen((v) => !v);
           break;
         default:
           return;
@@ -183,8 +187,17 @@ export function CityExperience() {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, []);
-
   const onSelect = useCallback((index: number | null) => setSelected(index), []);
+  const city = data.city;
+  const onFocusBuilding = useCallback(
+    (index: number) => {
+      const b = city.buildings[index];
+      if (!b) return;
+      setSelected(index);
+      cameraRef.current?.focus(b);
+    },
+    [city],
+  );
   const building = selected !== null ? data.city.buildings[selected] : undefined;
   const loading = phase.kind === "loading";
   const labels = useMemo(
@@ -205,7 +218,11 @@ export function CityExperience() {
           reducedMotion={reducedMotion}
           hoverStore={hoverStore}
           cameraRef={cameraRef}
+          flying={flying}
+          flyStore={flyStore}
+          picker={picker}
           onSelect={onSelect}
+          onFocus={onFocusBuilding}
         />
       </div>
 
@@ -243,7 +260,17 @@ export function CityExperience() {
           )}
         </div>
 
-        <div className="pointer-events-none absolute inset-x-3 bottom-[max(0.75rem,env(safe-area-inset-bottom))] flex items-end justify-center sm:inset-x-4 sm:bottom-4">
+        <div className="pointer-events-none absolute inset-x-3 bottom-[max(0.75rem,env(safe-area-inset-bottom))] flex flex-col items-center justify-end gap-3 sm:inset-x-4 sm:bottom-4 sm:items-start">
+          {helpOpen && (
+            <div className="flex w-full justify-center pb-16 sm:justify-start sm:pb-0">
+              <ControlsHelp onClose={() => setHelpOpen(false)} />
+            </div>
+          )}
+          {flying && phase.kind !== "loading" && (
+            <div className="flex w-full justify-center pb-16 sm:justify-start sm:pb-0 sm:pr-[34rem]">
+              <FlyHud store={flyStore} city={data.city} onLand={() => setFlying(false)} />
+            </div>
+          )}
           {heroOpen && phase.kind === "idle" && (
             <div className="flex w-full justify-center pb-16 sm:justify-start sm:pb-0">
               <Hero onExample={(repo) => void load(repo)} onDismiss={() => setHeroOpen(false)} />
@@ -271,11 +298,18 @@ export function CityExperience() {
           <ControlsDock
             showLabels={showLabels}
             autoRotate={autoRotate}
+            flying={flying}
+            helpOpen={helpOpen}
             onZoom={(d) => cameraRef.current?.zoom(d)}
             onRotate={(d) => cameraRef.current?.rotate(d)}
             onReset={() => cameraRef.current?.reset()}
             onToggleLabels={() => setShowLabels((v) => !v)}
             onToggleAutoRotate={() => setAutoRotate((v) => !v)}
+            onToggleFly={() => {
+              setHeroOpen(false);
+              setFlying((v) => !v);
+            }}
+            onToggleHelp={() => setHelpOpen((v) => !v)}
           />
         </div>
       </div>

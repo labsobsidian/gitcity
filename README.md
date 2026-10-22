@@ -24,6 +24,17 @@ https://github.com/vercel/next.js   →   a 5,700-building metropolis with Turbo
 - **Polish**: district-by-district reveal, scan pulses while loading, traffic on the avenues, blinking antenna beacons, bloom,
   an auto-orbit, keyboard shortcuts, `prefers-reduced-motion` support, and quality that drops automatically on slow GPUs.
 
+## Controls
+
+| | Explore (default) | Fly mode (`F`) |
+| --- | --- | --- |
+| Mouse | Drag to orbit · right-drag to pan · scroll to zoom · click to inspect · double-click to fly to a building | Click to capture the mouse, then the mouse steers · click to inspect the building in the crosshair · scroll sets cruise speed |
+| Keyboard | `WASD`/arrows move · `Q`/`E` turn · `T`/`G` tilt · `Z`/`X` zoom · `Shift` faster · `H` reset | `WASD` fly · `Space`/`C` up/down · `Shift` boost · `Esc` frees the mouse · `F` lands |
+| Anywhere | `L` labels · `O` auto-orbit · `?` controls help · `Esc` deselect | |
+
+Keys are read by physical position, so WASD works on any keyboard layout. Fly mode is hidden on touch-only devices, where
+one-finger orbit, pinch zoom and two-finger pan apply.
+
 ## Quick start
 
 ```bash

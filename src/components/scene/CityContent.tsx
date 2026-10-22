@@ -1,21 +1,26 @@
 "use client";
 
 import { useFrame, type ThreeEvent } from "@react-three/fiber";
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef, type MutableRefObject } from "react";
 import type { CityModel } from "@/lib/city/types";
 import { buildCityMeshes } from "./cityMeshes";
 import type { HoverStore } from "./hoverStore";
+import type { Picker } from "./input";
 
 interface Props {
   city: CityModel;
   selected: number | null;
   reducedMotion: boolean;
+  /** In flight the mouse steers the camera, so pointer hover/click on buildings is off (the crosshair picks instead). */
+  flying: boolean;
   hoverStore: HoverStore;
+  picker: MutableRefObject<Picker | null>;
   onSelect(index: number | null): void;
+  onFocus(index: number): void;
 }
 
 /** The city itself: instanced buildings, plates, streets and traffic. Remounted per city. */
-export function CityContent({ city, selected, reducedMotion, hoverStore, onSelect }: Props) {
+export function CityContent({ city, selected, reducedMotion, flying, hoverStore, picker, onSelect, onFocus }: Props) {
   const meshes = useMemo(() => buildCityMeshes(city, { reducedMotion }), [city, reducedMotion]);
   const hovered = useRef<number>(-1);
 
@@ -30,6 +35,32 @@ export function CityContent({ city, selected, reducedMotion, hoverStore, onSelec
     },
     [hoverStore],
   );
+
+  // Center-of-screen picking for the flight crosshair.
+  useEffect(() => {
+    picker.current = {
+      pick(ray) {
+        const hit = ray.intersectObject(meshes.bodies, false)[0];
+        const index = hit?.instanceId !== undefined ? (meshes.bodyToBuilding[hit.instanceId] ?? -1) : -1;
+        meshes.uniforms.uHover.value = index;
+        return index;
+      },
+      clearHighlight() {
+        meshes.uniforms.uHover.value = -1;
+      },
+    };
+    return () => {
+      picker.current = null;
+    };
+  }, [meshes, picker]);
+
+  // Entering flight drops any pointer hover state.
+  useEffect(() => {
+    if (!flying) return;
+    hovered.current = -1;
+    hoverStore.set(null);
+    document.body.style.cursor = "";
+  }, [flying, hoverStore]);
 
   useFrame((state, delta) => {
     const u = meshes.uniforms;
@@ -55,24 +86,31 @@ export function CityContent({ city, selected, reducedMotion, hoverStore, onSelec
   };
 
   return (
-    <group>
-      <primitive
-        object={meshes.group}
-        onPointerMove={(e: ThreeEvent<PointerEvent>) => {
-          e.stopPropagation();
-          setHover(buildingAt(e), e);
-        }}
-        onPointerOut={(e: ThreeEvent<PointerEvent>) => setHover(-1, e)}
-        onClick={(e: ThreeEvent<MouseEvent>) => {
-          // Ignore clicks that were really camera drags.
-          if (e.delta > 6) return;
-          const index = buildingAt(e);
-          if (index < 0) return;
-          e.stopPropagation();
-          onSelect(index);
-        }}
-      />
-
-    </group>
+    <primitive
+      object={meshes.group}
+      onPointerMove={(e: ThreeEvent<PointerEvent>) => {
+        if (flying) return;
+        e.stopPropagation();
+        setHover(buildingAt(e), e);
+      }}
+      onPointerOut={(e: ThreeEvent<PointerEvent>) => {
+        if (!flying) setHover(-1, e);
+      }}
+      onClick={(e: ThreeEvent<MouseEvent>) => {
+        // Ignore clicks that were really camera drags.
+        if (flying || e.delta > 6) return;
+        const index = buildingAt(e);
+        if (index < 0) return;
+        e.stopPropagation();
+        onSelect(index);
+      }}
+      onDoubleClick={(e: ThreeEvent<MouseEvent>) => {
+        if (flying) return;
+        const index = buildingAt(e);
+        if (index < 0) return;
+        e.stopPropagation();
+        onFocus(index);
+      }}
+    />
   );
 }

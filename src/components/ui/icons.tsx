@@ -36,3 +36,5 @@ export const Check = (p: IconProps) => (<Icon {...p}><path d="M5 12l5 5L20 7" />
 export const Warning = (p: IconProps) => (<Icon {...p}><path d="M12 3l10 18H2L12 3z" /><path d="M12 10v5M12 18v.01" /></Icon>);
 export const Chevron = (p: IconProps) => (<Icon {...p}><path d="M6 9l6 6 6-6" /></Icon>);
 export const Spark = (p: IconProps) => (<Icon {...p}><path d="M12 3v4M12 17v4M3 12h4M17 12h4M6 6l2.5 2.5M15.5 15.5L18 18M6 18l2.5-2.5M15.5 8.5L18 6" /></Icon>);
+export const Plane = (p: IconProps) => (<Icon {...p}><path d="M21 12.5 3 5l3.5 7L3 19l18-6.5Z" /><path d="M6.5 12H13" /></Icon>);
+export const Keyboard = (p: IconProps) => (<Icon {...p}><rect x="2.5" y="6" width="19" height="12" rx="2" /><path d="M6 10h.01M10 10h.01M14 10h.01M18 10h.01M7 14h10" /></Icon>);

@@ -55,7 +55,7 @@ export function Hero({ onExample, onDismiss }: { onExample(repo: string): void; 
         </div>
       </div>
       <button type="button" onClick={onDismiss} className="mt-5 inline-flex items-center gap-1.5 text-xs text-muted hover:text-ink">
-        <Spark width={14} height={14} /> Or explore the demo city — drag to orbit, scroll to zoom, click a building.
+        <Spark width={14} height={14} /> Or explore the demo city — drag to orbit, WASD to move, F to fly, ? for all controls.
       </button>
     </section>
   );

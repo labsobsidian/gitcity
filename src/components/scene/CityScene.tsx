@@ -4,13 +4,14 @@ import { PerformanceMonitor } from "@react-three/drei";
 import { Canvas, useFrame } from "@react-three/fiber";
 import { Bloom, EffectComposer, ToneMapping, Vignette } from "@react-three/postprocessing";
 import { ToneMappingMode } from "postprocessing";
-import { memo, useRef, useState, type Ref } from "react";
+import { memo, useRef, useState, type MutableRefObject, type Ref } from "react";
 import * as THREE from "three";
 import type { CityModel } from "@/lib/city/types";
 import { CameraRig, type CameraApi } from "./CameraRig";
 import { CityContent } from "./CityContent";
 import { Ground } from "./Ground";
 import type { HoverStore } from "./hoverStore";
+import type { FlyState, Picker, Store } from "./input";
 import { LabelProjector, type LabelRegistry } from "./labels";
 
 export interface CitySceneProps {
@@ -23,7 +24,11 @@ export interface CitySceneProps {
   reducedMotion: boolean;
   hoverStore: HoverStore;
   cameraRef: Ref<CameraApi | null>;
+  flying: boolean;
+  flyStore: Store<FlyState>;
+  picker: MutableRefObject<Picker | null>;
   onSelect(index: number | null): void;
+  onFocus(index: number): void;
 }
 
 /** Slowly orbiting colored lights give the plates and ground a living sheen. */
@@ -69,7 +74,9 @@ export const CityScene = memo(function CityScene(props: CitySceneProps) {
       dpr={dpr}
       gl={{ antialias: !highQuality, powerPreference: "high-performance", alpha: false }}
       camera={{ fov: 45, near: 0.5, far: 4000, position: [120, 140, 120] }}
-      onPointerMissed={() => props.onSelect(null)}
+      onPointerMissed={() => {
+        if (!props.flying) props.onSelect(null);
+      }}
       onCreated={(state) => {
         // Dev-only handle for profiling from the browser console.
         if (process.env.NODE_ENV !== "production") (window as unknown as { __gitcity: unknown }).__gitcity = state;
@@ -100,10 +107,23 @@ export const CityScene = memo(function CityScene(props: CitySceneProps) {
         city={city}
         selected={props.selected}
         reducedMotion={reducedMotion}
+        flying={props.flying}
         hoverStore={props.hoverStore}
+        picker={props.picker}
+        onSelect={props.onSelect}
+        onFocus={props.onFocus}
+      />
+      <CameraRig
+        city={city}
+        cityKey={cityKey}
+        autoRotate={props.autoRotate}
+        reducedMotion={reducedMotion}
+        flying={props.flying}
+        flyStore={props.flyStore}
+        picker={props.picker}
+        apiRef={props.cameraRef}
         onSelect={props.onSelect}
       />
-      <CameraRig city={city} cityKey={cityKey} autoRotate={props.autoRotate} reducedMotion={reducedMotion} apiRef={props.cameraRef} />
       <LabelProjector registry={props.labelRegistry} />
       {highQuality && <Effects />}
     </Canvas>

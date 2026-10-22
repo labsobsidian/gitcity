@@ -6,9 +6,11 @@ import type { CityModel } from "@/lib/city/types";
 import { buildCityMeshes } from "./cityMeshes";
 import type { HoverStore } from "./hoverStore";
 import type { Picker } from "./input";
+import type { SceneTheme } from "./theme";
 
 interface Props {
   city: CityModel;
+  theme: SceneTheme;
   selected: number | null;
   reducedMotion: boolean;
   /** In flight the mouse steers the camera, so pointer hover/click on buildings is off (the crosshair picks instead). */
@@ -20,8 +22,8 @@ interface Props {
 }
 
 /** The city itself: instanced buildings, plates, streets and traffic. Remounted per city. */
-export function CityContent({ city, selected, reducedMotion, flying, hoverStore, picker, onSelect, onFocus }: Props) {
-  const meshes = useMemo(() => buildCityMeshes(city, { reducedMotion }), [city, reducedMotion]);
+export function CityContent({ city, theme, selected, reducedMotion, flying, hoverStore, picker, onSelect, onFocus }: Props) {
+  const meshes = useMemo(() => buildCityMeshes(city, theme, { reducedMotion }), [city, theme, reducedMotion]);
   const hovered = useRef<number>(-1);
 
   useEffect(() => () => meshes.dispose(), [meshes]);
@@ -41,7 +43,8 @@ export function CityContent({ city, selected, reducedMotion, flying, hoverStore,
     picker.current = {
       pick(ray) {
         const hit = ray.intersectObject(meshes.bodies, false)[0];
-        const index = hit?.instanceId !== undefined ? (meshes.bodyToBuilding[hit.instanceId] ?? -1) : -1;
+        const raw = hit?.instanceId !== undefined ? (meshes.bodyToBuilding[hit.instanceId] ?? -1) : -1;
+        const index = raw >= 0 ? raw : -1; // decorative instances (suburbs) aren't buildings
         meshes.uniforms.uHover.value = index;
         return index;
       },
@@ -73,7 +76,8 @@ export function CityContent({ city, selected, reducedMotion, flying, hoverStore,
 
   const buildingAt = (e: ThreeEvent<PointerEvent | MouseEvent>) => {
     if (e.object !== meshes.bodies || e.instanceId === undefined) return -1;
-    return meshes.bodyToBuilding[e.instanceId] ?? -1;
+    const index = meshes.bodyToBuilding[e.instanceId] ?? -1;
+    return index >= 0 ? index : -1; // decorative instances (suburbs) aren't buildings
   };
 
   const setHover = (index: number, e: ThreeEvent<PointerEvent>) => {

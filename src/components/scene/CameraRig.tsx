@@ -12,6 +12,8 @@ export interface CameraApi {
   zoom(direction: 1 | -1): void;
   rotate(direction: 1 | -1): void;
   focus(building: Building): void;
+  /** Swing the orbit over a ground point (district landmarks). */
+  lookAt(x: number, z: number): void;
 }
 
 interface Props {
@@ -38,7 +40,8 @@ function homePose(city: CityModel, fovDeg: number, aspect: number) {
   const fov = (fovDeg * Math.PI) / 180;
   // Fit the city's footprint horizontally and vertically.
   const horizontalFov = 2 * Math.atan(Math.tan(fov / 2) * aspect);
-  const fit = city.radius / Math.sin(Math.min(fov, horizontalFov) / 2);
+  // Portrait screens crop the sides a little rather than shrinking the city to a speck.
+  const fit = city.radius / Math.sin(Math.max(Math.min(fov, horizontalFov), fov * 0.6) / 2);
   const distance = Math.max(30, fit * 0.78 + city.maxHeight * 0.4);
   const target = { x: city.center.x, y: Math.min(city.maxHeight * 0.12, 3), z: city.center.z };
   return {
@@ -262,6 +265,14 @@ export function CameraRig({ city, cityKey, autoRotate, reducedMotion, flying, fl
           b.z,
           !reducedMotion,
         );
+      },
+      lookAt(x, z) {
+        const c = controls.current;
+        if (!c || flying) return;
+        lastInteraction.current = performance.now();
+        const d = Math.max(45, Math.min(c.distance, city.radius * 0.9));
+        const azimuth = c.azimuthAngle;
+        void c.setLookAt(x + d * 0.6 * Math.sin(azimuth), d * 0.75, z + d * 0.6 * Math.cos(azimuth), x, 0, z, !reducedMotion);
       },
     }),
     [camera, city, size, reducedMotion, flying],

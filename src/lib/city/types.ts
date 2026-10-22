@@ -4,6 +4,8 @@
  */
 import type { LanguageId } from "../languages";
 import type { SourceFile } from "../types";
+import type { CityForm, CityProfile, LandmarkKind } from "./profile";
+import type { RoofKind, StyleId, WindowPattern } from "./styles";
 
 /** Axis-aligned rectangle on the ground plane: min corner (x, z), extent (w along x, d along z). */
 export interface Rect {
@@ -13,7 +15,7 @@ export interface Rect {
   d: number;
 }
 
-export type RoofStyle = "flat" | "spire" | "antenna" | "crown" | "helipad" | "dome";
+export type RoofStyle = RoofKind;
 
 /** One stacked block of a building. `y` is the block's base height above the plot. */
 export interface Tier {
@@ -45,12 +47,13 @@ export interface Building {
   tiers: Tier[];
   roof: RoofStyle;
   roofHeight: number;
-  /** 0 grid · 1 horizontal bands · 2 vertical strips · 3 sparse */
-  windowStyle: 0 | 1 | 2 | 3;
+  /** Shader window pattern (see WINDOW in styles.ts). */
+  windowStyle: WindowPattern;
   /** Stable per-file random value in [0, 1), for shader variation. */
   seed: number;
   /** The grid cell reserved for this building; the footprint always fits inside it. */
   lot: Rect;
+  landmark?: LandmarkKind;
 }
 
 export interface District {
@@ -72,6 +75,9 @@ export interface District {
   dominantLanguage: LanguageId;
   /** Index of the depth-1 ancestor (itself at depth 1), or -1 for the root. */
   topLevel: number;
+  landmark?: LandmarkKind;
+  /** Groups islands but has no ground of its own (no plate, outline or label). */
+  virtual?: boolean;
 }
 
 export interface StreetSegment {
@@ -83,8 +89,36 @@ export interface StreetSegment {
   level: 0 | 1;
 }
 
+export interface Bridge {
+  x1: number;
+  z1: number;
+  x2: number;
+  z2: number;
+  width: number;
+}
+
+export interface Landmark {
+  kind: LandmarkKind;
+  path: string;
+  building?: number;
+  district?: number;
+  /** World position for beams and labels. */
+  x: number;
+  y: number;
+  z: number;
+}
+
 export interface CityModel {
   name: string;
+  form: CityForm;
+  style: StyleId;
+  /** Street-level ground (the root plate). Empty areas between are water or open ground. */
+  ground: Rect[];
+  water: Rect[];
+  bridges: Bridge[];
+  /** Central plaza / hub island, if the form has one. */
+  plaza: { x: number; z: number; radius: number } | null;
+  landmarks: Landmark[];
   buildings: Building[];
   districts: District[];
   streets: StreetSegment[];
@@ -99,4 +133,6 @@ export interface CityInput {
   /** Used for labels; variation is seeded per file path so buildings keep their look across commits. */
   name: string;
   files: readonly SourceFile[];
+  /** Style, shape and landmarks. Without one the city is a neon grid. */
+  profile?: CityProfile;
 }

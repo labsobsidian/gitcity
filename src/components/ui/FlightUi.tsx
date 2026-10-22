@@ -120,6 +120,7 @@ export function ControlsHelp({ onClose }: { onClose(): void }) {
           <h3 className="mb-1 mt-3 font-mono text-[10px] uppercase tracking-[0.16em] text-dim">Anywhere</h3>
           <ul className="divide-y divide-line">
             <Row label="Labels · auto-orbit · this help" keys={[<Kbd key="l">L</Kbd>, <Kbd key="o">O</Kbd>, <Kbd key="q">?</Kbd>]} />
+            <Row label="Remix the city" keys={[<Kbd key="m">M</Kbd>]} />
           </ul>
         </div>
       </div>

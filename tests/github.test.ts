@@ -28,12 +28,26 @@ const repoBody = {
   stargazers_count: 10,
   forks_count: 2,
   archived: false,
+  created_at: "2016-10-05T23:32:51Z",
+  pushed_at: "2026-10-20T10:00:00Z",
+  topics: ["react", "framework", "Bad Topic!", 5],
+  owner: { avatar_url: "https://avatars.githubusercontent.com/u/14985020?v=4" },
 };
 
 describe("fetchRepoMeta", () => {
   it("parses metadata and canonical names", async () => {
     const meta = await fetchRepoMeta("vercel", "next.js", { fetchImpl: mockFetch(200, repoBody) });
     expect(meta).toMatchObject({ owner: "Vercel", repo: "next.js", defaultBranch: "canary", isPrivate: false, sizeKb: 1234 });
+    expect(meta.createdAt).toBe("2016-10-05T23:32:51.000Z");
+    expect(meta.topics).toEqual(["react", "framework"]);
+    expect(meta.avatarUrl).toBe("https://avatars.githubusercontent.com/u/14985020?v=4&s=256");
+  });
+
+  it("drops avatar URLs that aren't GitHub's avatar CDN", async () => {
+    for (const avatar_url of ["http://avatars.githubusercontent.com/u/1", "https://evil.example/a.png", "javascript:alert(1)"]) {
+      const meta = await fetchRepoMeta("a", "b", { fetchImpl: mockFetch(200, { ...repoBody, owner: { avatar_url } }) });
+      expect(meta.avatarUrl).toBeNull();
+    }
   });
 
   it("fails closed on private or ambiguous visibility", async () => {

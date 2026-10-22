@@ -8,12 +8,14 @@
 import { useFrame, useThree } from "@react-three/fiber";
 import { useMemo } from "react";
 import * as THREE from "three";
+import { LANDMARK_INFO } from "@/lib/city/profile";
 import type { CityModel } from "@/lib/city/types";
 
 export interface LabelSpec {
   id: string;
-  kind: "district" | "tower" | "selected";
+  kind: "district" | "tower" | "selected" | "landmark";
   text: string;
+  color?: string;
   meta?: string;
   position: [number, number, number];
 }
@@ -43,8 +45,9 @@ export function cityLabels(city: CityModel, selected: number | null, showLabels:
   if (showLabels) {
     // Only districts with enough ground to carry a label; small repos also label second-level districts.
     const cityArea = city.bounds.w * city.bounds.d;
-    const topLevel = city.districts.filter((d) => d.depth === 1);
-    const candidates = (topLevel.length < 6 ? city.districts.filter((d) => d.depth === 1 || d.depth === 2) : topLevel).filter(
+    // Islands spread out of a monorepo folder count as top-level; the grouping folder itself has no ground.
+    const topLevel = city.districts.filter((d) => !d.virtual && (d.depth === 1 || (d.parent >= 0 && city.districts[d.parent]!.virtual)));
+    const candidates = (topLevel.length < 6 ? city.districts.filter((d) => !d.virtual && (d.depth === 1 || d.depth === 2)) : topLevel).filter(
       (d) => d.depth === 1 || (d.rect.w * d.rect.d) / cityArea > 0.04,
     );
     for (const d of [...candidates].sort((a, b) => b.rect.w * b.rect.d - a.rect.w * a.rect.d).slice(0, MAX_DISTRICT_LABELS)) {
@@ -56,7 +59,22 @@ export function cityLabels(city: CityModel, selected: number | null, showLabels:
         position: [d.rect.x + d.rect.w / 2, d.elevation + 0.5, d.rect.z + d.rect.d / 2],
       });
     }
-    const towers = city.buildings.filter((b) => !b.cluster).sort((a, b) => b.height - a.height).slice(0, MAX_TOWER_LABELS);
+    for (const l of city.landmarks) {
+      const info = LANDMARK_INFO[l.kind];
+      out.push({
+        id: `l${l.kind}`,
+        kind: "landmark",
+        text: info.name,
+        meta: l.building !== undefined ? city.buildings[l.building]!.name : undefined,
+        color: info.color,
+        position: [l.x, l.y + (l.building !== undefined ? 2.2 : 1.2), l.z],
+      });
+    }
+    const landmarkBuildings = new Set(city.landmarks.map((l) => l.building));
+    const towers = city.buildings
+      .filter((b) => !b.cluster && !landmarkBuildings.has(b.index))
+      .sort((a, b) => b.height - a.height)
+      .slice(0, MAX_TOWER_LABELS);
     for (const b of towers) {
       if (b.index === selected) continue;
       out.push({ id: `b${b.index}`, kind: "tower", text: b.name, position: [b.x, b.baseY + b.height + b.roofHeight + 1.2, b.z] });

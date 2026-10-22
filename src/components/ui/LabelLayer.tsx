@@ -15,14 +15,14 @@ export function LabelLayer({ labels, registry }: { labels: LabelSpec[]; registry
           ref={(el) => {
             if (!el) return;
             // Selected first, then in list order (the list is already sorted by importance).
-            const priority = label.kind === "selected" ? 1e6 : labels.length - i;
+            const priority = label.kind === "selected" ? 1e6 : label.kind === "landmark" ? 1e5 + labels.length - i : labels.length - i;
             registry.elements.set(label.id, { el, position: new THREE.Vector3(...label.position), priority });
             return () => {
               registry.elements.delete(label.id);
             };
           }}
         >
-          <div className={`city-label city-label--${label.kind}`}>
+          <div className={`city-label city-label--${label.kind}`} style={label.color ? ({ "--label-color": label.color } as React.CSSProperties) : undefined}>
             {label.text}
             {label.meta && <span>{label.meta}</span>}
           </div>

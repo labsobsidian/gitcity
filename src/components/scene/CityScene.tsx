@@ -4,18 +4,24 @@ import { PerformanceMonitor } from "@react-three/drei";
 import { Canvas, useFrame } from "@react-three/fiber";
 import { Bloom, EffectComposer, ToneMapping, Vignette } from "@react-three/postprocessing";
 import { ToneMappingMode } from "postprocessing";
-import { memo, useRef, useState, type MutableRefObject, type Ref } from "react";
+import { memo, useMemo, useRef, useState, type MutableRefObject, type Ref } from "react";
 import * as THREE from "three";
+import type { CityProfile } from "@/lib/city/profile";
 import type { CityModel } from "@/lib/city/types";
+import { Searchlights, SkyDome, Weather } from "./Atmosphere";
 import { CameraRig, type CameraApi } from "./CameraRig";
 import { CityContent } from "./CityContent";
 import { Ground } from "./Ground";
+import { Hologram } from "./Hologram";
 import type { HoverStore } from "./hoverStore";
 import type { FlyState, Picker, Store } from "./input";
 import { LabelProjector, type LabelRegistry } from "./labels";
+import { themeFor, type SceneTheme } from "./theme";
 
 export interface CitySceneProps {
   city: CityModel;
+  /** Style, sky and signage; absent for cities generated without one. */
+  profile: CityProfile | undefined;
   cityKey: string;
   selected: number | null;
   labelRegistry: LabelRegistry;
@@ -32,7 +38,7 @@ export interface CitySceneProps {
 }
 
 /** Slowly orbiting colored lights give the plates and ground a living sheen. */
-function Lighting({ radius, reducedMotion }: { radius: number; reducedMotion: boolean }) {
+function Lighting({ radius, reducedMotion, theme }: { radius: number; reducedMotion: boolean; theme: SceneTheme }) {
   const a = useRef<THREE.PointLight>(null);
   const b = useRef<THREE.PointLight>(null);
   useFrame(({ clock }) => {
@@ -43,13 +49,29 @@ function Lighting({ radius, reducedMotion }: { radius: number; reducedMotion: bo
   });
   return (
     <>
-      <ambientLight intensity={0.35} color="#6fa8c4" />
-      <hemisphereLight args={["#2b6d8a", "#04070a", 0.55]} />
+      <ambientLight intensity={0.35} color={theme.sky.horizon} />
+      <hemisphereLight args={[new THREE.Color(theme.sky.zenith).lerp(new THREE.Color(theme.accents[1]), 0.35), "#04070a", 0.55]} />
       <directionalLight position={[radius * 0.6, radius * 1.2, radius * 0.4]} intensity={0.7} color="#cdeeff" />
-      <pointLight ref={a} color="#31E6B0" intensity={radius * 2.5} distance={radius * 2.2} decay={1.2} position={[radius * 0.6, radius * 0.35 + 20, 0]} />
-      <pointLight ref={b} color="#8b5cf6" intensity={radius * 2} distance={radius * 2} decay={1.2} position={[-radius * 0.5, radius * 0.3 + 15, 0]} />
+      <pointLight ref={a} color={theme.accents[0]} intensity={radius * 2.5} distance={radius * 2.2} decay={1.2} position={[radius * 0.6, radius * 0.35 + 20, 0]} />
+      <pointLight ref={b} color={theme.accents[1]} intensity={radius * 2} distance={radius * 2} decay={1.2} position={[-radius * 0.5, radius * 0.3 + 15, 0]} />
     </>
   );
+}
+
+/**
+ * Fog relative to the camera's distance from the city: the city stays clear at
+ * any zoom (and on narrow screens), while the horizon still fades out.
+ */
+function FogRig({ city, near, far }: { city: CityModel; near: number; far: number }) {
+  const center = useMemo(() => new THREE.Vector3(city.center.x, 0, city.center.z), [city]);
+  useFrame(({ scene, camera }) => {
+    const fog = scene.fog as THREE.Fog | null;
+    if (!fog) return;
+    const d = camera.position.distanceTo(center);
+    fog.near = Math.max(near, d * 0.8);
+    fog.far = Math.max(far, d * 2.2);
+  });
+  return null;
 }
 
 function Effects() {
@@ -63,11 +85,12 @@ function Effects() {
 }
 
 export const CityScene = memo(function CityScene(props: CitySceneProps) {
-  const { city, cityKey, reducedMotion } = props;
+  const { city, cityKey, reducedMotion, profile } = props;
   const [highQuality, setHighQuality] = useState(true);
   const [dpr, setDpr] = useState(1.5);
-  const fogNear = Math.max(80, city.radius * 1.4);
-  const fogFar = Math.max(500, city.radius * 5.5);
+  const theme = useMemo(() => themeFor(profile), [profile]);
+  const fogNear = Math.max(60, city.radius * theme.fog.near);
+  const fogFar = Math.max(400, city.radius * theme.fog.far);
 
   return (
     <Canvas
@@ -83,8 +106,10 @@ export const CityScene = memo(function CityScene(props: CitySceneProps) {
       }}
       aria-label={`3D city of ${city.name}`}
     >
-      <color attach="background" args={["#080D12"]} />
-      <fog attach="fog" args={["#080D12", fogNear, fogFar]} />
+      <color attach="background" args={[theme.sky.horizon]} />
+      <fog attach="fog" args={[theme.fog.color, fogNear, fogFar]} />
+      <FogRig city={city} near={fogNear} far={fogFar} />
+      <SkyDome theme={theme} />
       <PerformanceMonitor
         onDecline={() => {
           setDpr(1);
@@ -100,11 +125,21 @@ export const CityScene = memo(function CityScene(props: CitySceneProps) {
           setHighQuality(false);
         }}
       />
-      <Lighting radius={city.radius} reducedMotion={reducedMotion} />
-      <Ground radius={city.radius} scanning={props.scanning} pulseKey={cityKey} reducedMotion={reducedMotion} />
+      <Lighting radius={city.radius} reducedMotion={reducedMotion} theme={theme} />
+      <Ground
+        radius={city.radius}
+        scanning={props.scanning}
+        pulseKey={cityKey}
+        reducedMotion={reducedMotion}
+        colors={{ ground: theme.ground, grid: theme.grid, pulse: theme.accents[0] }}
+      />
+      <Weather theme={theme} reducedMotion={reducedMotion} />
+      <Searchlights theme={theme} city={city} reducedMotion={reducedMotion} />
+      {profile && <Hologram key={`holo-${cityKey}`} profile={profile} city={city} theme={theme} reducedMotion={reducedMotion} />}
       <CityContent
         key={cityKey}
         city={city}
+        theme={theme}
         selected={props.selected}
         reducedMotion={reducedMotion}
         flying={props.flying}

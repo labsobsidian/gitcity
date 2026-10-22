@@ -3,7 +3,10 @@
 import { useState } from "react";
 import { languageOf } from "@/lib/languages";
 import { formatBytes, formatCount } from "@/lib/format";
+import type { CityProfile } from "@/lib/city/profile";
+import type { CityModel } from "@/lib/city/types";
 import type { ExclusionReason, RepoSummary, RepoTree } from "@/lib/types";
+import { CityDna } from "./CityDna";
 import { Chevron, Warning } from "./icons";
 
 interface Props {
@@ -11,6 +14,12 @@ interface Props {
   tree: RepoTree;
   demo: boolean;
   demoName: string;
+  profile: CityProfile;
+  city: CityModel;
+  onRemix(): void;
+  onOriginal(): void;
+  onLandmark(buildingIndex: number): void;
+  onLandmarkDistrict(x: number, z: number): void;
 }
 
 const REASON_LABEL: Record<ExclusionReason, string> = {
@@ -32,7 +41,7 @@ function Stat({ label, value, sub }: { label: string; value: string; sub?: strin
   );
 }
 
-export function StatsPanel({ summary, tree, demo, demoName }: Props) {
+export function StatsPanel({ summary, tree, demo, demoName, profile, city, onRemix, onOriginal, onLandmark, onLandmarkDistrict }: Props) {
   // Collapsed by default on phones so the city stays visible; one tap expands it.
   const [open, setOpen] = useState(() => typeof window === "undefined" || window.matchMedia("(min-width: 640px)").matches);
   const { stats } = tree;
@@ -74,6 +83,14 @@ export function StatsPanel({ summary, tree, demo, demoName }: Props) {
 
       {open && (
         <div className="space-y-3 px-4 pb-4">
+          <CityDna
+            profile={profile}
+            city={city}
+            onRemix={onRemix}
+            onOriginal={onOriginal}
+            onLandmark={onLandmark}
+            onLandmarkDistrict={onLandmarkDistrict}
+          />
           <div className="grid grid-cols-2 gap-2">
             <Stat
               label="Files visualized"

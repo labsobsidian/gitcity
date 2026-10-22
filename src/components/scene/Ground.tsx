@@ -13,10 +13,11 @@ interface Props {
   /** Changes when a new city is revealed, triggering one pulse. */
   pulseKey: string;
   reducedMotion: boolean;
+  colors: { ground: string; grid: [string, string]; pulse: string };
 }
 
 /** Dark ground, a glowing coordinate grid, and expanding scan rings. */
-export function Ground({ radius, scanning, pulseKey, reducedMotion }: Props) {
+export function Ground({ radius, scanning, pulseKey, reducedMotion, colors }: Props) {
   const ring = useRef<THREE.Mesh>(null);
   const material = useRef<THREE.MeshBasicMaterial>(null);
   const start = useRef(-10);
@@ -53,21 +54,21 @@ export function Ground({ radius, scanning, pulseKey, reducedMotion }: Props) {
 
   return (
     <group>
-      <mesh rotation-x={-Math.PI / 2} position-y={-0.03} raycast={() => null}>
+      <mesh rotation-x={-Math.PI / 2} position-y={-0.5} raycast={() => null}>
         <planeGeometry args={[size, size]} />
-        <meshStandardMaterial color="#05090c" roughness={0.95} metalness={0.1} />
+        <meshStandardMaterial color={colors.ground} roughness={0.95} metalness={0.1} />
       </mesh>
       {/* Finite on purpose: drei's infiniteGrid scales the plane by fadeDistance,
           which loses float precision on large cities and erases the lines. */}
       <Grid
-        position-y={-0.005}
+        position-y={-0.45}
         args={[gridSize, gridSize]}
         cellSize={CELL}
         cellThickness={0.55}
-        cellColor="#154c47"
+        cellColor={colors.grid[0]}
         sectionSize={CELL * 6}
         sectionThickness={1.1}
-        sectionColor="#24a07f"
+        sectionColor={colors.grid[1]}
         fadeDistance={Math.max(240, radius * 3.2)}
         fadeStrength={1.4}
         fadeFrom={0}
@@ -77,7 +78,7 @@ export function Ground({ radius, scanning, pulseKey, reducedMotion }: Props) {
         <ringGeometry args={[0.97, 1, 160]} />
         <meshBasicMaterial
           ref={material}
-          color={new THREE.Color("#31E6B0").multiplyScalar(2.2)}
+          color={new THREE.Color(colors.pulse).multiplyScalar(2.2)}
           transparent
           depthWrite={false}
           blending={THREE.AdditiveBlending}

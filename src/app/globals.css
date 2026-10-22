@@ -129,6 +129,24 @@ body {
   background: rgb(8 13 18 / 0.6);
   border-left: 2px solid var(--color-cyan);
 }
+.city-label--landmark {
+  display: flex;
+  gap: 0.4rem;
+  align-items: baseline;
+  padding: 0.12rem 0.45rem;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: var(--label-color, #fff);
+  background: rgb(8 13 18 / 0.75);
+  border: 1px solid color-mix(in srgb, var(--label-color, #fff) 55%, transparent);
+  border-radius: 999px;
+  box-shadow: 0 0 14px -4px var(--label-color, #fff);
+}
+.city-label--landmark span {
+  color: var(--color-dim);
+  font-weight: 400;
+}
 .city-label--selected {
   font-size: 12px;
   font-weight: 600;

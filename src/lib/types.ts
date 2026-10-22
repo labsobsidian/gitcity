@@ -62,6 +62,12 @@ export interface RepoSummary {
   stars: number;
   forks: number;
   archived: boolean;
+  /** ISO timestamps (null if GitHub omitted them). */
+  createdAt: string | null;
+  pushedAt: string | null;
+  topics: string[];
+  /** Owner avatar on avatars.githubusercontent.com (validated server-side), or null. */
+  avatarUrl: string | null;
 }
 
 export interface RepoTree {

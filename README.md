@@ -24,13 +24,31 @@ https://github.com/vercel/next.js   →   a 5,700-building metropolis with Turbo
 - **Polish**: district-by-district reveal, scan pulses while loading, traffic on the avenues, blinking antenna beacons, bloom,
   an auto-orbit, keyboard shortcuts, `prefers-reduced-motion` support, and quality that drops automatically on slow GPUs.
 
+## City DNA: every repo gets its own city
+
+A pure, deterministic profile step (`src/lib/city/profile.ts`) reads the repository and decides how its city looks.
+The same repository at the same commit always produces the same city.
+
+| Signal | Effect |
+| --- | --- |
+| Language mix (CSS/HTML count ⅓) | **Architecture style**: TS/JS → *Neon Sprawl*, Rust/Zig → *Foundry District* (smokestacks), Python → *Greenhouse Commons* (domes, rooftop gardens, glass), C/C++ → *Walled Megablock* (dense, neon signage), Go/Swift/Dart → *Modular Grid* (solar roofs), Java/C#/Kotlin → *Corporate Heights*, Ruby/PHP/Elixir → *Art Deco Boulevard*, docs-first → *Archive Quarter* |
+| Folder structure | **City shape**: monorepo `packages/`/`crates/`… → *archipelago* (one island per package, bridges to a hub); `src/` + `tests/` → *river city* (code and tests on opposite banks); many balanced folders → *plaza city*; otherwise a grid |
+| Repo age | **Sky**: dawn (new) → dusk → night → deep midnight (veteran) |
+| Last push | **Activity**: lit windows and traffic density; archived repos become **ruins** (dark windows, moss, haze) |
+| Stars · forks | Sweeping searchlights (≥20k stars on a night sky: aurora) · satellite suburbs on the horizon |
+| Owner, name, topics | Floating hologram sign with the owner's avatar |
+| Well-known files | **Landmarks** with light beams: README → Town Hall, LICENSE → Charter Monument, manifest → Dependency Port, Dockerfile → Container Yard, entry point → Central Spire, largest file → The Giant, CI workflows → CI Factory, tests → Proving Grounds, docs → Grand Library |
+
+**Remix** (`M`, or the button in City DNA; `?remix=N` in the URL) re-rolls only the artistic choices: the shape (among those
+the structure supports), sky and weather, and accent hue. The data mapping never changes. A remixed city is shareable by URL.
+
 ## Controls
 
 | | Explore (default) | Fly mode (`F`) |
 | --- | --- | --- |
 | Mouse | Drag to orbit · right-drag to pan · scroll to zoom · click to inspect · double-click to fly to a building | Click to capture the mouse, then the mouse steers · click to inspect the building in the crosshair · scroll sets cruise speed |
 | Keyboard | `WASD`/arrows move · `Q`/`E` turn · `T`/`G` tilt · `Z`/`X` zoom · `Shift` faster · `H` reset | `WASD` fly · `Space`/`C` up/down · `Shift` boost · `Esc` frees the mouse · `F` lands |
-| Anywhere | `L` labels · `O` auto-orbit · `?` controls help · `Esc` deselect | |
+| Anywhere | `L` labels · `O` auto-orbit · `M` remix · `?` controls help · `Esc` deselect | |
 
 Keys are read by physical position, so WASD works on any keyboard layout. Fly mode is hidden on touch-only devices, where
 one-finger orbit, pinch zoom and two-finger pan apply.

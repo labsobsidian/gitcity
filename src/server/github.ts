@@ -160,6 +160,27 @@ interface RepoMeta {
   stars: number;
   forks: number;
   archived: boolean;
+  createdAt: string | null;
+  pushedAt: string | null;
+  topics: string[];
+  avatarUrl: string | null;
+}
+
+function isoDate(v: unknown): string | null {
+  return typeof v === "string" && !Number.isNaN(Date.parse(v)) ? new Date(v).toISOString() : null;
+}
+
+/** Only GitHub's avatar CDN over https, so the browser never loads an arbitrary URL from API data. */
+function avatarUrl(owner: unknown): string | null {
+  if (!isRecord(owner) || typeof owner.avatar_url !== "string") return null;
+  try {
+    const url = new URL(owner.avatar_url);
+    if (url.protocol !== "https:" || url.hostname !== "avatars.githubusercontent.com") return null;
+    url.searchParams.set("s", "256");
+    return url.toString();
+  } catch {
+    return null;
+  }
 }
 
 export async function fetchRepoMeta(owner: string, repo: string, opts: GitHubOptions): Promise<RepoMeta> {
@@ -184,6 +205,12 @@ export async function fetchRepoMeta(owner: string, repo: string, opts: GitHubOpt
     stars: num(body.stargazers_count),
     forks: num(body.forks_count),
     archived: body.archived === true,
+    createdAt: isoDate(body.created_at),
+    pushedAt: isoDate(body.pushed_at),
+    topics: Array.isArray(body.topics)
+      ? body.topics.filter((t): t is string => typeof t === "string" && /^[a-z0-9-]{1,50}$/.test(t)).slice(0, 20)
+      : [],
+    avatarUrl: avatarUrl(body.owner),
   };
 }
 

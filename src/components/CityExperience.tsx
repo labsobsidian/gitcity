@@ -5,6 +5,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore
 import { ClientError, fetchSummary, fetchTree } from "@/lib/client/api";
 import { DEMO_NAME, demoFiles } from "@/lib/city/demo";
 import { generateCity } from "@/lib/city/generate";
+import { buildProfile, type CityProfile, type ProfileMeta } from "@/lib/city/profile";
 import type { CityModel } from "@/lib/city/types";
 import { normalizeTree } from "@/lib/github/normalize";
 import { formatRepoRef, parseRepoInput } from "@/lib/github/parse-url";
@@ -27,12 +28,37 @@ const CityScene = dynamic(() => import("./scene/CityScene").then((m) => m.CitySc
   loading: () => <div className="absolute inset-0 grid place-items-center font-mono text-xs text-dim">Booting renderer…</div>,
 });
 
+/** What was fetched. The profile and city are derived from it (plus the remix number). */
 interface CityData {
   key: string;
-  city: CityModel;
   tree: RepoTree;
   summary: RepoSummary | null;
+  meta: ProfileMeta;
   demo: boolean;
+}
+
+function buildCity(data: CityData, remix: number): { profile: CityProfile; city: CityModel } {
+  const profile = buildProfile({ files: data.tree.files, languages: data.tree.stats.languages, meta: data.meta, remix });
+  return { profile, city: generateCity({ name: data.meta.fullName, files: data.tree.files, profile }) };
+}
+
+function metaFrom(summary: RepoSummary): ProfileMeta {
+  return {
+    fullName: summary.fullName,
+    description: summary.description,
+    createdAt: summary.createdAt,
+    pushedAt: summary.pushedAt,
+    stars: summary.stars,
+    forks: summary.forks,
+    archived: summary.archived,
+    topics: summary.topics,
+    avatarUrl: summary.avatarUrl,
+  };
+}
+
+function remixFromUrl(): number {
+  const raw = Number.parseInt(new URLSearchParams(window.location.search).get("remix") ?? "", 10);
+  return Number.isFinite(raw) && raw > 0 ? Math.min(raw, 9999) : 0;
 }
 
 type Phase =
@@ -47,7 +73,19 @@ function buildDemo(): CityData {
     6000,
   );
   const tree: RepoTree = { fullName: DEMO_NAME, commitSha: "0".repeat(40), truncated: false, simplified, budget: 6000, files: normalized, stats };
-  return { key: "demo", city: generateCity({ name: DEMO_NAME, files: normalized }), tree, summary: null, demo: true };
+  const now = Date.now();
+  const meta: ProfileMeta = {
+    fullName: DEMO_NAME,
+    description: "A fictional polyglot monorepo",
+    createdAt: new Date(now - 3 * 365 * 86_400_000).toISOString(),
+    pushedAt: new Date(now - 86_400_000).toISOString(),
+    stars: 4200,
+    forks: 310,
+    archived: false,
+    topics: ["monorepo", "demo", "gitcity"],
+    avatarUrl: null,
+  };
+  return { key: "demo", tree, summary: null, meta, demo: true };
 }
 
 const reducedMotionQuery = "(prefers-reduced-motion: reduce)";
@@ -75,6 +113,7 @@ export function CityExperience() {
   const [inputValue, setInputValue] = useState("");
   const [flying, setFlying] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
+  const [remix, setRemix] = useState(0);
   const reducedMotion = useReducedMotion();
   const hoverStore = useMemo(createHoverStore, []);
   const labelRegistry = useMemo(createLabelRegistry, []);
@@ -83,7 +122,7 @@ export function CityExperience() {
   const cameraRef = useRef<CameraApi | null>(null);
   const abortRef = useRef<AbortController | null>(null);
 
-  const load = useCallback(async (input: string, options: { updateUrl?: boolean } = {}) => {
+  const load = useCallback(async (input: string, options: { updateUrl?: boolean; remix?: number } = {}) => {
     const parsed = parseRepoInput(input);
     if (!parsed.ok) {
       setInputValue(input);
@@ -113,14 +152,15 @@ export function CityExperience() {
       // Let the loading card paint before the (synchronous) layout pass.
       await nextFrame();
       if (controller.signal.aborted) return;
-      const city = generateCity({ name: summary.fullName, files: tree.files });
       setSelected(null);
       setFlying(false);
-      setData({ key: `${summary.fullName}@${summary.commitSha}#${tree.budget}`, city, tree, summary, demo: false });
+      setRemix(options.remix ?? 0);
+      setData({ key: `${summary.fullName}@${summary.commitSha}#${tree.budget}`, tree, summary, meta: metaFrom(summary), demo: false });
       setPhase({ kind: "idle" });
       if (options.updateUrl !== false) {
         const url = new URL(window.location.href);
         url.searchParams.set("repo", formatRepoRef({ owner: summary.owner, repo: summary.repo, ref: parsed.value.ref }));
+        url.searchParams.delete("remix");
         window.history.replaceState(null, "", url);
       }
     } catch (error) {
@@ -135,7 +175,7 @@ export function CityExperience() {
   // Deep links: /?repo=owner/name
   useEffect(() => {
     const repo = new URLSearchParams(window.location.search).get("repo");
-    if (repo) void load(repo, { updateUrl: false });
+    if (repo) void load(repo, { updateUrl: false, remix: remixFromUrl() });
     return () => abortRef.current?.abort();
   }, [load]);
 
@@ -146,6 +186,7 @@ export function CityExperience() {
 
   const helpOpenRef = useRef(helpOpen);
   helpOpenRef.current = helpOpen;
+  const applyRemixRef = useRef<(n: number) => void>(() => {});
 
   // Toggle shortcuts (ignored while typing). Camera movement keys are handled
   // continuously inside the camera rig.
@@ -180,6 +221,10 @@ export function CityExperience() {
         case "?":
           setHelpOpen((v) => !v);
           break;
+        case "m":
+        case "M":
+          applyRemixRef.current(remixRef.current + 1);
+          break;
         default:
           return;
       }
@@ -188,7 +233,22 @@ export function CityExperience() {
     return () => window.removeEventListener("keydown", onKey);
   }, []);
   const onSelect = useCallback((index: number | null) => setSelected(index), []);
-  const city = data.city;
+  const built = useMemo(() => buildCity(data, remix), [data, remix]);
+  const { city, profile } = built;
+  const cityKey = `${data.key}~${remix}`;
+
+  const applyRemix = useCallback((next: number) => {
+    setRemix(next);
+    setSelected(null);
+    setFlying(false);
+    const url = new URL(window.location.href);
+    if (next > 0) url.searchParams.set("remix", String(next));
+    else url.searchParams.delete("remix");
+    window.history.replaceState(null, "", url);
+  }, []);
+  const remixRef = useRef(remix);
+  remixRef.current = remix;
+  applyRemixRef.current = applyRemix;
   const onFocusBuilding = useCallback(
     (index: number) => {
       const b = city.buildings[index];
@@ -198,19 +258,20 @@ export function CityExperience() {
     },
     [city],
   );
-  const building = selected !== null ? data.city.buildings[selected] : undefined;
+  const building = selected !== null ? city.buildings[selected] : undefined;
   const loading = phase.kind === "loading";
   const labels = useMemo(
-    () => (heroOpen ? [] : cityLabels(data.city, selected, showLabels)),
-    [data.city, selected, showLabels, heroOpen],
+    () => (heroOpen ? [] : cityLabels(city, selected, showLabels)),
+    [city, selected, showLabels, heroOpen],
   );
 
   return (
     <main className="relative h-dvh w-full overflow-hidden bg-void">
       <div className="absolute inset-0">
         <CityScene
-          city={data.city}
-          cityKey={data.key}
+          city={city}
+          profile={profile}
+          cityKey={cityKey}
           selected={selected}
           labelRegistry={labelRegistry}
           autoRotate={autoRotate}
@@ -241,7 +302,18 @@ export function CityExperience() {
         <div className="relative flex min-h-0 flex-1 flex-col gap-3 sm:flex-row sm:items-start">
           {!heroOpen && (
             <div className="max-h-full min-h-0 overflow-y-auto sm:max-h-[calc(100dvh-6rem)]">
-              <StatsPanel summary={data.summary} tree={data.tree} demo={data.demo} demoName={DEMO_NAME} />
+              <StatsPanel
+                summary={data.summary}
+                tree={data.tree}
+                demo={data.demo}
+                demoName={DEMO_NAME}
+                profile={profile}
+                city={city}
+                onRemix={() => applyRemix(remix + 1)}
+                onOriginal={() => applyRemix(0)}
+                onLandmark={(index) => onFocusBuilding(index)}
+                onLandmarkDistrict={(x, z) => cameraRef.current?.lookAt(x, z)}
+              />
             </div>
           )}
 
@@ -251,7 +323,7 @@ export function CityExperience() {
             <div className="absolute inset-x-0 bottom-16 z-10 sm:static sm:inset-auto">
               <Inspector
                 building={building}
-                district={data.city.districts[building.districtIndex]}
+                district={city.districts[building.districtIndex]}
                 summary={data.summary}
                 onClose={() => setSelected(null)}
                 onFocus={() => cameraRef.current?.focus(building)}
@@ -268,7 +340,7 @@ export function CityExperience() {
           )}
           {flying && phase.kind !== "loading" && (
             <div className="flex w-full justify-center pb-16 sm:justify-start sm:pb-0 sm:pr-[34rem]">
-              <FlyHud store={flyStore} city={data.city} onLand={() => setFlying(false)} />
+              <FlyHud store={flyStore} city={city} onLand={() => setFlying(false)} />
             </div>
           )}
           {heroOpen && phase.kind === "idle" && (
@@ -314,7 +386,7 @@ export function CityExperience() {
         </div>
       </div>
 
-      <HoverTooltip store={hoverStore} city={data.city} />
+      <HoverTooltip store={hoverStore} city={city} />
     </main>
   );
 }

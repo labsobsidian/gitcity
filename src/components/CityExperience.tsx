@@ -46,13 +46,14 @@ function metaFrom(summary: RepoSummary): ProfileMeta {
   return {
     fullName: summary.fullName,
     description: summary.description,
-    createdAt: summary.createdAt,
-    pushedAt: summary.pushedAt,
-    stars: summary.stars,
-    forks: summary.forks,
-    archived: summary.archived,
-    topics: summary.topics,
-    avatarUrl: summary.avatarUrl,
+    // Tolerate summaries cached before these fields existed.
+    createdAt: summary.createdAt ?? null,
+    pushedAt: summary.pushedAt ?? null,
+    stars: summary.stars ?? 0,
+    forks: summary.forks ?? 0,
+    archived: summary.archived ?? false,
+    topics: Array.isArray(summary.topics) ? summary.topics : [],
+    avatarUrl: summary.avatarUrl ?? null,
   };
 }
 

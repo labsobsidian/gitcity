@@ -49,6 +49,12 @@ describe("parseRepoInput", () => {
     expect(parseRepoInput(input).ok).toBe(false);
   });
 
+  it("asks for the owner when given a bare repository name", () => {
+    const result = parseRepoInput("gitcity");
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toMatch(/owner/i);
+  });
+
   it("formats refs canonically", () => {
     expect(formatRepoRef({ owner: "a", repo: "b" })).toBe("a/b");
     expect(formatRepoRef({ owner: "a", repo: "b", ref: "dev" })).toBe("a/b@dev");

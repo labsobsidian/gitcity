@@ -60,6 +60,10 @@ export function parseRepoInput(raw: string): ParseResult {
   if (!input) return fail("Paste a GitHub repository URL, like https://github.com/vercel/next.js.");
   if (input.length > MAX_INPUT_LENGTH) return fail("That URL is too long.");
   if (/\s/.test(input)) return fail("Repository URLs can't contain spaces.");
+  // A bare name like "gitcity" would otherwise be read as a hostname.
+  if (/^[A-Za-z0-9._-]+$/.test(input) && !input.includes(".")) {
+    return fail(`Add the owner too, like someone/${input} or https://github.com/someone/${input}.`);
+  }
 
   // SSH form: git@github.com:owner/repo(.git)
   const ssh = /^git@github\.com:([^/]+)\/([^/]+?)\/?$/i.exec(input);

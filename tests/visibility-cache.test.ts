@@ -340,6 +340,21 @@ describe("public repositories keep working", () => {
     expect(github.state.calls.tree).toBe(1);
   });
 
+  it.each([
+    ["with", true],
+    ["without", false],
+  ])("resolves refs that differ only in case separately, %s an edge cache", async (_label, withEdge) => {
+    if (!withEdge) g.caches = undefined;
+    github.state.branches = { Main: PRIVATE_SHA, main: PUBLIC_SHA };
+    const routes = await loadRoutes();
+    const upper = await (await routes.repo("acme/widgets@Main")).json();
+    const lower = await (await routes.repo("acme/widgets@main")).json();
+    expect(upper).toMatchObject({ ref: "Main", commitSha: PRIVATE_SHA });
+    expect(lower).toMatchObject({ ref: "main", commitSha: PUBLIC_SHA });
+    expect(github.state.calls.commit).toBe(2);
+    if (withEdge) expect(edge.store.size).toBe(2);
+  });
+
   it("serves repository summaries", async () => {
     const routes = await loadRoutes();
     const res = await routes.repo();

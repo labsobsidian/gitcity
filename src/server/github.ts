@@ -348,7 +348,8 @@ export async function getRepoSummary(meta: RepoMeta, ref: string): Promise<RepoS
   const opts = options();
   // Always resolve through GitHub, even for SHAs: it validates that the commit
   // belongs to this repository and expands abbreviated SHAs.
-  const commitSha = await shaCache.getOrLoad(`${meta.id}@${ref}`.toLowerCase(), SHA_TTL, async () => {
+  // Git refs are case-sensitive (`Main` and `main` can both exist), so the key keeps the ref as given.
+  const commitSha = await shaCache.getOrLoad(`${meta.id}@${ref}`, SHA_TTL, async () => {
     const sha = await fetchCommitSha(meta.owner, meta.repo, ref, opts);
     await confirmStillPublic(meta);
     return sha;

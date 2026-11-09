@@ -120,7 +120,9 @@ src/
    the ref to a 40-character commit SHA.
 2. It then calls `/api/tree` with that SHA. The server downloads the recursive tree (size-capped), normalizes it and applies
    the building budget. The response is keyed by an immutable SHA, so it's cached for a long time: in-process LRU, plus
-   Cloudflare's Cache API in each data center (`src/server/edge-cache.ts`).
+   Cloudflare's Cache API in each data center (`src/server/edge-cache.ts`), keyed by GitHub's repository ID. Both routes ask
+   GitHub whether the repository is public on every request (a conditional request, so an unchanged repository costs a 304)
+   before answering from any cache, and tell browsers and proxies not to store responses (`private, no-store`).
 3. The browser streams the tree (showing bytes received), runs `generateCity`, and hands the model to the renderer.
 
 ### Mapping
@@ -148,8 +150,11 @@ submodules and symlinks. The stats panel lists what was skipped.
   github.com and URLs with credentials are rejected.
 - Every GitHub response is shape-checked, and bodies are read with byte caps (2 MB metadata, 48 MB tree).
 - Paths and names are rendered as text only. Paths with `..`, empty segments or control characters are dropped.
-- Private repositories are refused even when the token can see them (verified by the opt-in live test).
-- Nothing is stored. Caches are in memory and keyed by public commit SHAs.
+- Private repositories are refused even when the token can see them (verified by the opt-in live test), with the same 404
+  as a repository that doesn't exist. Their metadata is never cached.
+- Nothing is stored durably. Caches are in memory or in Cloudflare's per-data-center Cache API. Visibility is checked with
+  GitHub on every request and again after every commit or tree read, and cached entries are bound to the repository's ID,
+  so a repository that turns private (or is recreated under the same name) can't be served from them.
 
 ## Deploying to Cloudflare Workers
 

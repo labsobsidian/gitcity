@@ -18,6 +18,7 @@ async function errorOf(promise: Promise<unknown>): Promise<AppError> {
 }
 
 const repoBody = {
+  id: 70107786,
   full_name: "Vercel/next.js",
   private: false,
   visibility: "public",
@@ -37,7 +38,7 @@ const repoBody = {
 describe("fetchRepoMeta", () => {
   it("parses metadata and canonical names", async () => {
     const meta = await fetchRepoMeta("vercel", "next.js", { fetchImpl: mockFetch(200, repoBody) });
-    expect(meta).toMatchObject({ owner: "Vercel", repo: "next.js", defaultBranch: "canary", isPrivate: false, sizeKb: 1234 });
+    expect(meta).toMatchObject({ id: 70107786, owner: "Vercel", repo: "next.js", defaultBranch: "canary", isPrivate: false, sizeKb: 1234 });
     expect(meta.createdAt).toBe("2016-10-05T23:32:51.000Z");
     expect(meta.topics).toEqual(["react", "framework"]);
     expect(meta.avatarUrl).toBe("https://avatars.githubusercontent.com/u/14985020?v=4&s=256");
@@ -63,6 +64,9 @@ describe("fetchRepoMeta", () => {
     expect((await errorOf(fetchRepoMeta("a", "b", { fetchImpl: mockFetch(503, "oops") }))).code).toBe("UPSTREAM");
     expect((await errorOf(fetchRepoMeta("a", "b", { fetchImpl: mockFetch(200, "not json") }))).code).toBe("BAD_RESPONSE");
     expect((await errorOf(fetchRepoMeta("a", "b", { fetchImpl: mockFetch(200, { nope: 1 }) }))).code).toBe("BAD_RESPONSE");
+    for (const id of [undefined, "70107786", 0, 1.5]) {
+      expect((await errorOf(fetchRepoMeta("a", "b", { fetchImpl: mockFetch(200, { ...repoBody, id }) }))).code).toBe("BAD_RESPONSE");
+    }
   });
 
   it("detects rate limiting and reports the reset time", async () => {

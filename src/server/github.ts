@@ -3,7 +3,6 @@
  * shape-checked before use and every body is read with a size cap.
  */
 import { normalizeTree, type RawTreeEntry } from "@/lib/github/normalize";
-import type { RepoRef } from "@/lib/github/parse-url";
 import type { RepoSummary, RepoTree } from "@/lib/types";
 import { TtlCache } from "./cache";
 import { AppError } from "./errors";
@@ -37,13 +36,20 @@ function encodePath(value: string): string {
   return value.split("/").map(encodeURIComponent).join("/");
 }
 
-async function request(path: string, context: Context, opts: GitHubOptions, accept = "application/vnd.github+json") {
+async function request(
+  path: string,
+  context: Context,
+  opts: GitHubOptions,
+  accept = "application/vnd.github+json",
+  ifNoneMatch?: string,
+) {
   const headers: Record<string, string> = {
     Accept: accept,
     "User-Agent": "GitCity/0.1 (+https://github.com)",
     "X-GitHub-Api-Version": "2022-11-28",
   };
   if (opts.token) headers.Authorization = `Bearer ${opts.token}`;
+  if (ifNoneMatch) headers["If-None-Match"] = ifNoneMatch;
 
   let res: Response;
   try {
@@ -59,8 +65,16 @@ async function request(path: string, context: Context, opts: GitHubOptions, acce
     }
     throw new AppError("NETWORK", "Couldn't reach GitHub. Check the connection and try again.", { cause: error });
   }
+  if (res.status === 304 && ifNoneMatch) return res;
   if (!res.ok) throw await toError(res, context);
   return res;
+}
+
+const NOT_FOUND_MESSAGE = "Check the spelling of the owner and repository. Private repositories also show up as not found.";
+
+/** Private and missing repositories get the same answer, so a refusal doesn't confirm that a repository exists. */
+function notFound(): AppError {
+  return new AppError("NOT_FOUND", NOT_FOUND_MESSAGE);
 }
 
 async function toError(res: Response, context: Context): Promise<AppError> {
@@ -87,7 +101,7 @@ async function toError(res: Response, context: Context): Promise<AppError> {
     case 404:
       return context === "commit"
         ? new AppError("REF_NOT_FOUND", "That branch, tag or commit doesn't exist in this repository.")
-        : new AppError("NOT_FOUND", "Check the spelling of the owner and repository. Private repositories also show up as not found.");
+        : notFound();
     case 409:
       return new AppError("EMPTY", "This repository is empty, so there's nothing to build yet.");
     case 422:
@@ -147,7 +161,9 @@ function badShape(what: string): AppError {
   return new AppError("BAD_RESPONSE", `GitHub returned an unexpected ${what} response.`);
 }
 
-interface RepoMeta {
+export interface RepoMeta {
+  /** GitHub's stable repository ID. A repository recreated under the same name gets a new one. */
+  id: number;
   owner: string;
   repo: string;
   fullName: string;
@@ -183,20 +199,32 @@ function avatarUrl(owner: unknown): string | null {
   }
 }
 
+const repoPath = (owner: string, repo: string) => `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`;
+
+/** Fail closed: anything not explicitly public is treated as private. */
+function isPrivateBody(body: Record<string, unknown>): boolean {
+  return body.private !== false || (body.visibility !== undefined && body.visibility !== "public");
+}
+
 export async function fetchRepoMeta(owner: string, repo: string, opts: GitHubOptions): Promise<RepoMeta> {
-  const res = await request(`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`, "repo", opts);
-  const body = await readJson(res, MAX_JSON_BYTES);
+  const res = await request(repoPath(owner, repo), "repo", opts);
+  return parseRepoMeta(await readJson(res, MAX_JSON_BYTES));
+}
+
+function parseRepoMeta(body: unknown): RepoMeta {
   if (!isRecord(body)) throw badShape("repository");
   const fullName = str(body.full_name);
   const defaultBranch = str(body.default_branch);
+  const id = body.id;
   if (!fullName || !fullName.includes("/") || !defaultBranch) throw badShape("repository");
+  if (typeof id !== "number" || !Number.isSafeInteger(id) || id <= 0) throw badShape("repository");
   const [canonicalOwner, canonicalRepo] = fullName.split("/") as [string, string];
   return {
+    id,
     owner: canonicalOwner,
     repo: canonicalRepo,
     fullName,
-    // Fail closed: anything not explicitly public is treated as private.
-    isPrivate: body.private !== false || (body.visibility !== undefined && body.visibility !== "public"),
+    isPrivate: isPrivateBody(body),
     description: str(body.description),
     htmlUrl: `https://github.com/${fullName}`,
     defaultBranch,
@@ -258,44 +286,82 @@ export async function fetchTree(
 // ---------------------------------------------------------------------------
 // Cached service layer used by the route handlers.
 
-const metaCache = new TtlCache<RepoMeta>(500);
+/**
+ * Last public answer per repository, kept only so the next visibility check
+ * can be a conditional request. It never authorizes anything by itself: every
+ * request asks GitHub again, and only a 304 for this exact representation
+ * (same ID, still public) lets it be reused. Private answers are never stored.
+ */
+const validators = new TtlCache<{ meta: RepoMeta; etag: string }>(500);
 const shaCache = new TtlCache<string>(500);
 const treeCache = new TtlCache<RepoTree>(48);
 
-const META_TTL = 5 * 60_000;
+const VALIDATOR_TTL = 60 * 60_000;
+const TRANSIENT = new Set<string>(["TIMEOUT", "NETWORK", "UPSTREAM", "RATE_LIMITED"]);
 const SHA_TTL = 60_000;
-const TREE_TTL = 6 * 60 * 60_000; // keyed by commit SHA, so it never goes stale
+const TREE_TTL = 6 * 60 * 60_000; // keyed by repository ID + commit SHA, so it never goes stale
 
 function options(): GitHubOptions {
   return { token: process.env.GITHUB_TOKEN?.trim() || undefined };
 }
 
-async function publicMeta(owner: string, repo: string): Promise<RepoMeta> {
-  const opts = options();
-  const meta = await metaCache.getOrLoad(`${owner}/${repo}`.toLowerCase(), META_TTL, () => fetchRepoMeta(owner, repo, opts));
-  // The server token may be able to see private repositories; never expose them.
-  if (meta.isPrivate) throw new AppError("PRIVATE", "This repository is private. GitCity only visualizes public repositories.");
-  return meta;
+/**
+ * Visibility gate. Asks GitHub on every call (conditionally, so an unchanged
+ * repository costs a 304, which doesn't count against an authenticated
+ * token's primary rate limit) and throws NOT_FOUND unless the repository is
+ * public right now. The server token may be able to read private
+ * repositories, so their metadata is checked before parsing and never kept.
+ */
+export async function requirePublicRepo(owner: string, repo: string): Promise<RepoMeta> {
+  const key = `${owner}/${repo}`.toLowerCase();
+  const known = validators.get(key);
+  try {
+    const res = await request(repoPath(owner, repo), "repo", options(), undefined, known?.etag);
+    if (res.status === 304 && known) return known.meta;
+    const body = await readJson(res, MAX_JSON_BYTES);
+    if (!isRecord(body) || isPrivateBody(body)) throw notFound();
+    const meta = parseRepoMeta(body);
+    const etag = res.headers.get("etag");
+    if (etag) validators.set(key, { meta, etag }, VALIDATOR_TTL);
+    else validators.delete(key);
+    return meta;
+  } catch (error) {
+    // Keep the validator through transient failures so recovery stays a 304; it
+    // can't authorize anything without GitHub confirming it.
+    if (!(error instanceof AppError && TRANSIENT.has(error.code))) validators.delete(key);
+    throw error;
+  }
 }
 
-export async function getRepoSummary(input: RepoRef): Promise<RepoSummary> {
-  const meta = await publicMeta(input.owner, input.repo);
-  const ref = input.ref ?? meta.defaultBranch;
+/**
+ * Run after every GitHub content read: the repository could have turned
+ * private (or been replaced) between the gate and the read, and the token may
+ * have been able to read it anyway.
+ */
+async function confirmStillPublic(meta: RepoMeta): Promise<void> {
+  const now = await requirePublicRepo(meta.owner, meta.repo);
+  if (now.id !== meta.id) throw notFound();
+}
+
+/** `ref` is resolved by the caller (requested ref or the default branch) so it matches the edge key. */
+export async function getRepoSummary(meta: RepoMeta, ref: string): Promise<RepoSummary> {
   const opts = options();
   // Always resolve through GitHub, even for SHAs: it validates that the commit
   // belongs to this repository and expands abbreviated SHAs.
-  const commitSha = await shaCache.getOrLoad(`${meta.fullName}@${ref}`.toLowerCase(), SHA_TTL, () =>
-    fetchCommitSha(meta.owner, meta.repo, ref, opts),
-  );
-  const { isPrivate: _private, ...summary } = meta;
+  const commitSha = await shaCache.getOrLoad(`${meta.id}@${ref}`.toLowerCase(), SHA_TTL, async () => {
+    const sha = await fetchCommitSha(meta.owner, meta.repo, ref, opts);
+    await confirmStillPublic(meta);
+    return sha;
+  });
+  const { id: _id, isPrivate: _private, ...summary } = meta;
   return { ...summary, ref, commitSha };
 }
 
-export async function getRepoTree(owner: string, repo: string, commitSha: string, budget: number): Promise<RepoTree> {
-  const meta = await publicMeta(owner, repo);
+export async function getRepoTree(meta: RepoMeta, commitSha: string, budget: number): Promise<RepoTree> {
   const opts = options();
-  return treeCache.getOrLoad(`${meta.fullName}@${commitSha}#${budget}`.toLowerCase(), TREE_TTL, async () => {
+  return treeCache.getOrLoad(`${meta.id}@${commitSha}#${budget}`.toLowerCase(), TREE_TTL, async () => {
     const { entries, truncated } = await fetchTree(meta.owner, meta.repo, commitSha, opts);
+    await confirmStillPublic(meta);
     const { files, stats, simplified } = normalizeTree(entries, budget);
     if (files.length === 0) {
       throw new AppError("EMPTY", "No source files were found after skipping dependencies, binaries and generated output.");

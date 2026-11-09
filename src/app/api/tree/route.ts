@@ -1,20 +1,16 @@
 import { validateRepoRef } from "@/lib/github/parse-url";
-import { withEdgeCache } from "@/server/edge-cache";
+import { CLIENT_CACHE_CONTROL, edgeKey, withEdgeCache } from "@/server/edge-cache";
 import { AppError, errorResponse } from "@/server/errors";
-import { getRepoTree, resolveBudget } from "@/server/github";
+import { getRepoTree, requirePublicRepo, resolveBudget } from "@/server/github";
 import { throttle } from "@/server/throttle";
 
 export const runtime = "nodejs";
 
-/**
- * GET /api/tree?owner=&repo=&sha=<40-hex>&budget= → RepoTree.
- * Keyed by an immutable commit SHA, so responses are cached aggressively.
- */
-export function GET(request: Request) {
-  return withEdgeCache(request, () => handle(request));
-}
+/** Keyed by repository ID + immutable commit SHA, so the edge keeps trees for a day (behind the visibility check). */
+const EDGE_TTL_SECONDS = 86_400;
 
-async function handle(request: Request) {
+/** GET /api/tree?owner=&repo=&sha=<40-hex>&budget= → RepoTree. */
+export async function GET(request: Request) {
   try {
     throttle(request);
     const params = new URL(request.url).searchParams;
@@ -24,10 +20,14 @@ async function handle(request: Request) {
     const valid = validateRepoRef(owner, repo);
     if (!valid.ok) throw new AppError("INVALID_URL", valid.reason);
     if (!/^[0-9a-f]{40}$/.test(sha)) throw new AppError("INVALID_URL", "A full 40-character commit SHA is required.");
-    const tree = await getRepoTree(owner, repo, sha, resolveBudget(params.get("budget")));
-    return Response.json(tree, {
-      headers: { "Cache-Control": "public, max-age=3600, s-maxage=86400, stale-while-revalidate=604800" },
-    });
+    const budget = resolveBudget(params.get("budget"));
+    // Checked with GitHub on every request, before any cache is consulted.
+    const meta = await requirePublicRepo(owner, repo);
+    return await withEdgeCache(
+      edgeKey(request, "tree", meta.id, sha, budget),
+      async () => Response.json(await getRepoTree(meta, sha, budget), { headers: { "Cache-Control": CLIENT_CACHE_CONTROL } }),
+      { ttlSeconds: EDGE_TTL_SECONDS },
+    );
   } catch (error) {
     return errorResponse(error);
   }

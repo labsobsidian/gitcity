@@ -1,7 +1,7 @@
 /**
  * Small in-process TTL + LRU cache with in-flight de-duplication. It lives as
- * long as the server instance does; the CDN cache (Cache-Control headers on
- * the API routes) does the heavy lifting across instances.
+ * long as the server instance does; the edge cache (src/server/edge-cache.ts)
+ * does the heavy lifting across instances.
  */
 export class TtlCache<V> {
   private readonly entries = new Map<string, { value: V; expiresAt: number }>();
@@ -20,6 +20,10 @@ export class TtlCache<V> {
     this.entries.delete(key);
     this.entries.set(key, entry);
     return entry.value;
+  }
+
+  delete(key: string): void {
+    this.entries.delete(key);
   }
 
   set(key: string, value: V, ttlMs: number): void {

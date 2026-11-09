@@ -262,6 +262,22 @@ describe("upstream failure during the visibility check", () => {
     expect(res.headers.get("Cache-Control")).toBe("no-store");
     expect(await res.text()).not.toContain(PUBLIC_PATH);
   });
+
+  it("keeps the validator, so recovery is a 304, and still refuses a repository that turned private meanwhile", async () => {
+    const routes = await loadRoutes();
+    expect((await routes.tree()).status).toBe(200);
+    github.state.metaStatus = 503;
+    expect((await routes.tree()).status).toBe(502);
+    github.state.metaStatus = 200;
+    const next = github.state.validatorsSent.length;
+    expect((await routes.tree()).status).toBe(200);
+    expect(github.state.validatorsSent[next]).not.toBeNull();
+    github.state.metaStatus = 503;
+    expect((await routes.tree()).status).toBe(502);
+    github.state.metaStatus = 200;
+    github.state.private = true;
+    await expectDenied(await routes.tree());
+  });
 });
 
 describe("response caching policy", () => {

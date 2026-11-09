@@ -12,7 +12,7 @@ const privateRepo = process.env.GITCITY_LIVE_PRIVATE_REPO;
 describe.runIf(live)("live GitHub", () => {
   it("resolves and normalizes a public repository", async () => {
     const meta = await requirePublicRepo("pmndrs", "zustand");
-    const summary = await getRepoSummary(meta);
+    const summary = await getRepoSummary(meta, meta.defaultBranch);
     expect(summary.commitSha).toMatch(/^[0-9a-f]{40}$/);
     const tree = await getRepoTree(meta, summary.commitSha, 6000);
     expect(tree.files.length).toBeGreaterThan(50);

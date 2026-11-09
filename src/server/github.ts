@@ -297,6 +297,7 @@ const shaCache = new TtlCache<string>(500);
 const treeCache = new TtlCache<RepoTree>(48);
 
 const VALIDATOR_TTL = 60 * 60_000;
+const TRANSIENT = new Set<string>(["TIMEOUT", "NETWORK", "UPSTREAM", "RATE_LIMITED"]);
 const SHA_TTL = 60_000;
 const TREE_TTL = 6 * 60 * 60_000; // keyed by repository ID + commit SHA, so it never goes stale
 
@@ -325,7 +326,9 @@ export async function requirePublicRepo(owner: string, repo: string): Promise<Re
     else validators.delete(key);
     return meta;
   } catch (error) {
-    validators.delete(key);
+    // Keep the validator through transient failures so recovery stays a 304; it
+    // can't authorize anything without GitHub confirming it.
+    if (!(error instanceof AppError && TRANSIENT.has(error.code))) validators.delete(key);
     throw error;
   }
 }
@@ -340,8 +343,8 @@ async function confirmStillPublic(meta: RepoMeta): Promise<void> {
   if (now.id !== meta.id) throw notFound();
 }
 
-export async function getRepoSummary(meta: RepoMeta, requestedRef?: string): Promise<RepoSummary> {
-  const ref = requestedRef ?? meta.defaultBranch;
+/** `ref` is resolved by the caller (requested ref or the default branch) so it matches the edge key. */
+export async function getRepoSummary(meta: RepoMeta, ref: string): Promise<RepoSummary> {
   const opts = options();
   // Always resolve through GitHub, even for SHAs: it validates that the commit
   // belongs to this repository and expands abbreviated SHAs.

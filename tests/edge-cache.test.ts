@@ -30,7 +30,7 @@ describe("withEdgeCache", () => {
     expect(a.headers.get("Cache-Control")).toBe(CLIENT_CACHE_CONTROL);
   });
 
-  it("serves repeat requests from the edge cache, keyed by full URL", async () => {
+  it("serves repeat requests from the edge cache, keyed by the given key", async () => {
     const cache = new FakeCache();
     g.caches = { default: cache };
     let calls = 0;

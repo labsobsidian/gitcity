@@ -9,7 +9,11 @@ export const runtime = "nodejs";
 /** Keyed by repository ID + immutable commit SHA, so the edge keeps trees for a day (behind the visibility check). */
 const EDGE_TTL_SECONDS = 86_400;
 
-/** GET /api/tree?owner=&repo=&sha=<40-hex>&budget= → RepoTree. */
+/**
+ * GET /api/tree?owner=&repo=&sha=<40-hex>&ref=&budget= → RepoTree. `ref` is the
+ * branch or tag the SHA was resolved from; a SHA is only served if it belongs
+ * to this repository's history (see proveCommit).
+ */
 export async function GET(request: Request) {
   try {
     throttle(request);
@@ -17,7 +21,8 @@ export async function GET(request: Request) {
     const owner = params.get("owner") ?? "";
     const repo = params.get("repo") ?? "";
     const sha = (params.get("sha") ?? "").toLowerCase();
-    const valid = validateRepoRef(owner, repo);
+    const ref = params.get("ref") || undefined;
+    const valid = validateRepoRef(owner, repo, ref);
     if (!valid.ok) throw new AppError("INVALID_URL", valid.reason);
     if (!/^[0-9a-f]{40}$/.test(sha)) throw new AppError("INVALID_URL", "A full 40-character commit SHA is required.");
     const budget = resolveBudget(params.get("budget"));
@@ -25,7 +30,7 @@ export async function GET(request: Request) {
     const meta = await requirePublicRepo(owner, repo);
     return await withEdgeCache(
       edgeKey(request, "tree", meta.id, sha, budget),
-      async () => Response.json(await getRepoTree(meta, sha, budget), { headers: { "Cache-Control": CLIENT_CACHE_CONTROL } }),
+      async () => Response.json(await getRepoTree(meta, sha, budget, ref), { headers: { "Cache-Control": CLIENT_CACHE_CONTROL } }),
       { ttlSeconds: EDGE_TTL_SECONDS },
     );
   } catch (error) {

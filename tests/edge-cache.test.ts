@@ -69,7 +69,7 @@ describe("withEdgeCache", () => {
 
   it("builds versioned keys on the request's origin that no route URL can collide with", () => {
     const request = new Request("https://gitcity.test/api/tree?owner=a&repo=b&sha=1&junk=x");
-    expect(edgeKey(request, "tree", 42, "abc", 6000)).toBe("https://gitcity.test/__edge/v2/tree/42/abc/6000");
-    expect(edgeKey(request, "repo", 42, "feature/x")).toBe("https://gitcity.test/__edge/v2/repo/42/feature%2Fx");
+    expect(edgeKey(request, "tree", 42, "abc", 6000)).toBe("https://gitcity.test/__edge/v3/tree/42/abc/6000");
+    expect(edgeKey(request, "repo", 42, "feature/x")).toBe("https://gitcity.test/__edge/v3/repo/42/feature%2Fx");
   });
 });

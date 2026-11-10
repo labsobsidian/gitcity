@@ -69,7 +69,31 @@ export interface NormalizeResult {
   simplified: boolean;
 }
 
+/**
+ * The budget-independent part of normalization: filtering and whole-tree
+ * stats. It only holds included files, so it is much smaller than the raw
+ * tree, and every building budget can be derived from it.
+ */
+export interface PreparedTree {
+  included: readonly SourceFile[];
+  stats: Omit<RepoStats, "buildings" | "clusteredFiles">;
+}
+
 export function normalizeTree(entries: readonly RawTreeEntry[], budget: number): NormalizeResult {
+  return budgetTree(prepareTree(entries), budget);
+}
+
+export function budgetTree({ included, stats }: PreparedTree, budget: number): NormalizeResult {
+  const { files, clusteredFiles } = applyBudget(included, budget);
+  const { languages, ...counts } = stats;
+  return {
+    files,
+    simplified: clusteredFiles > 0,
+    stats: { ...counts, buildings: files.length, clusteredFiles, languages },
+  };
+}
+
+export function prepareTree(entries: readonly RawTreeEntry[]): PreparedTree {
   const excludedByReason: Partial<Record<ExclusionReason, number>> = {};
   const exclude = (reason: ExclusionReason) => {
     excludedByReason[reason] = (excludedByReason[reason] ?? 0) + 1;
@@ -111,12 +135,10 @@ export function normalizeTree(entries: readonly RawTreeEntry[], budget: number):
     languages.set(id, stat);
   }
 
-  const { files, clusteredFiles } = applyBudget(included, budget);
   const excludedFiles = Object.values(excludedByReason).reduce((a, b) => a + (b ?? 0), 0);
 
   return {
-    files,
-    simplified: clusteredFiles > 0,
+    included,
     stats: {
       treeEntries: entries.length,
       includedFiles: included.length,
@@ -124,8 +146,6 @@ export function normalizeTree(entries: readonly RawTreeEntry[], budget: number):
       excludedByReason,
       directories: directories.size,
       includedBytes,
-      buildings: files.length,
-      clusteredFiles,
       languages: [...languages.values()].sort((a, b) => b.bytes - a.bytes || b.files - a.files || a.id.localeCompare(b.id)),
     },
   };

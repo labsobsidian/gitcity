@@ -88,8 +88,11 @@ All optional. Server-side only, never sent to the browser.
 | `GITCITY_BUILDING_BUDGET` | `6000` | Default buildings per city (clamped to 200 – 15,000). |
 | `GITCITY_RATE_LIMIT_PER_MINUTE` | `40` | Per-client requests per minute to the API routes (best effort, per instance). |
 
-A city costs 3 GitHub requests (repo metadata, commit SHA, recursive tree). Without a token GitHub allows 60 requests an
-hour per IP, and on Cloudflare the outbound IPs are shared with other Workers, so **a deployed instance needs a token**.
+A new city costs 4 GitHub requests (repo metadata, commit SHA, a compare that proves the commit belongs to the
+repository, and the recursive tree) plus 3 conditional metadata checks (each route's visibility check and the rechecks
+after each read). A city that's already cached costs one conditional check per request. With a token, a conditional check
+for an unchanged repository is a 304 and doesn't count against the rate limit. Without a token
+GitHub allows 60 requests an hour per IP and counts 304s too, and on Cloudflare the outbound IPs are shared with other Workers, so **a deployed instance needs a token**.
 
 ## Architecture
 
@@ -118,11 +121,13 @@ src/
 
 1. The browser validates the input, then calls `/api/repo`, which fetches metadata, refuses private repositories and resolves
    the ref to a 40-character commit SHA.
-2. It then calls `/api/tree` with that SHA. The server downloads the recursive tree (size-capped), normalizes it and applies
-   the building budget. The response is keyed by an immutable SHA, so it's cached for a long time: in-process LRU, plus
+2. It then calls `/api/tree` with that SHA and the ref it came from. The server first proves the commit is part of the
+   repository's own history (below), downloads the recursive tree once per commit (size-capped) and filters it, then
+   applies the building budget, so other budgets don't download it again. The response is keyed by an immutable SHA, so it's cached for a long time: in-process LRU, plus
    Cloudflare's Cache API in each data center (`src/server/edge-cache.ts`), keyed by GitHub's repository ID. Both routes ask
    GitHub whether the repository is public on every request (a conditional request, so an unchanged repository costs a 304)
    before answering from any cache, and tell browsers and proxies not to store responses (`private, no-store`).
+   Simultaneous requests for one repository share a single check if it started within the last second.
 3. The browser streams the tree (showing bytes received), runs `generateCity`, and hands the model to the renderer.
 
 ### Mapping
@@ -155,6 +160,12 @@ submodules and symlinks. The stats panel lists what was skipped.
 - Nothing is stored durably. Caches are in memory or in Cloudflare's per-data-center Cache API. Visibility is checked with
   GitHub on every request and again after every commit or tree read, and cached entries are bound to the repository's ID,
   so a repository that turns private (or is recreated under the same name) can't be served from them.
+- GitHub serves any commit in a repository's fork network by SHA, including commits that only exist in other forks (and in
+  some cases commits made in private repositories of that network). A SHA is only accepted when it's reachable from the
+  branch or tag it was resolved from or from the default branch, or is the head of one of the repository's branches.
+  Pull request refs (`pull/N/head`) don't count, since they point into other forks. Anything else gets the same 404 as a
+  commit that doesn't exist, before its tree is fetched. So a pasted commit ID that is neither on the default branch nor a
+  branch head is refused, even if it's in an older part of another branch's history.
 
 ## Deploying to Cloudflare Workers
 

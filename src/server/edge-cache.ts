@@ -19,12 +19,13 @@ export const CLIENT_CACHE_CONTROL = "private, no-store";
 /**
  * Edge entries are keyed by what the response actually depends on (GitHub's
  * stable repository ID first), under a versioned path no route serves.
- * Entries stored before v2 were keyed by the request URL and can never match,
- * and a repository recreated under the same name can't reach old entries.
+ * Entries stored before v2 were keyed by the request URL, and v2 trees were
+ * stored before commits had to be proven part of the repository; neither can
+ * match. A repository recreated under the same name can't reach old entries.
  */
 export function edgeKey(request: Request, kind: "repo" | "tree", ...parts: (string | number)[]): string {
   const path = [kind, ...parts].map((part) => encodeURIComponent(String(part))).join("/");
-  return new URL(`/__edge/v2/${path}`, request.url).href;
+  return new URL(`/__edge/v3/${path}`, request.url).href;
 }
 
 function edgeCache(): Cache | null {

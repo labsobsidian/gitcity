@@ -9,6 +9,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const PUBLIC_SHA = "0123456789abcdef0123456789abcdef01234567";
 const PRIVATE_SHA = "fedcba9876543210fedcba9876543210fedcba98";
+/** A commit that only exists in another repository of the fork network, which GitHub still serves through this one. */
+const FORK_SHA = "abababababababababababababababababababab";
+const FORK_PATH = "src/synthetic-fork-only-file.ts";
 const PUBLIC_PATH = "src/synthetic-public-file.ts";
 const PRIVATE_PATH = "src/synthetic-private-only-file.ts";
 const DESCRIPTION = "Synthetic fixture description";
@@ -41,17 +44,48 @@ function mockGitHub() {
     tokenSeesPrivate: true,
     metaStatus: 200,
     /** Paths in the current repository's tree, by SHA. */
-    trees: { [PUBLIC_SHA]: [PUBLIC_PATH, "README.md"], [PRIVATE_SHA]: [PUBLIC_PATH, PRIVATE_PATH] } as Record<string, string[]>,
+    trees: {
+      [PUBLIC_SHA]: [PUBLIC_PATH, "README.md"],
+      [PRIVATE_SHA]: [PUBLIC_PATH, PRIVATE_PATH],
+      [FORK_SHA]: [PUBLIC_PATH, FORK_PATH],
+    } as Record<string, string[]>,
     branches: { main: PUBLIC_SHA, "secret-branch": PRIVATE_SHA } as Record<string, string>,
+    /** Pull request refs (not branches), which GitHub resolves in the base repository. */
+    pulls: {} as Record<string, string>,
+    /** Commits reachable from each branch, newest first. FORK_SHA is in none of them. */
+    history: { main: [PUBLIC_SHA], "secret-branch": [PRIVATE_SHA, PUBLIC_SHA] } as Record<string, string[]>,
+    /** When set, the next metadata response is held until this promise settles (its answer is decided on arrival). */
+    holdNextMeta: undefined as undefined | Promise<void>,
     /** Runs right after a content endpoint answers, to simulate a change mid-request. */
     afterContent: undefined as undefined | (() => void),
-    calls: { repo: 0, notModified: 0, conditional: 0, commit: 0, tree: 0 },
+    calls: { repo: 0, notModified: 0, conditional: 0, commit: 0, tree: 0, compare: 0, branchesWhereHead: 0 },
     /** If-None-Match sent with each metadata request, in order (null = unconditional). */
     validatorsSent: [] as (string | null)[],
   };
   const etag = () => `W/"${state.id}-${state.private}"`;
   const notFound = () => Response.json({ message: "Not Found" }, { status: 404 });
   const visible = () => state.exists && (!state.private || state.tokenSeesPrivate);
+  const metaAnswer = (ifNoneMatch: string | null): Response => {
+    if (state.metaStatus !== 200) return new Response("upstream down", { status: state.metaStatus });
+    if (!visible()) return notFound();
+    if (ifNoneMatch === etag()) {
+      state.calls.notModified++;
+      return new Response(null, { status: 304, headers: { ETag: etag() } });
+    }
+    return Response.json(
+      {
+        id: state.id,
+        full_name: "acme/widgets",
+        private: state.private,
+        visibility: state.private ? "private" : "public",
+        default_branch: "main",
+        description: DESCRIPTION,
+        size: 10,
+        topics: ["synthetic"],
+      },
+      { headers: { ETag: etag() } },
+    );
+  };
 
   const fetchImpl = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
     const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url);
@@ -62,30 +96,35 @@ function mockGitHub() {
       state.calls.repo++;
       if (ifNoneMatch) state.calls.conditional++;
       state.validatorsSent.push(ifNoneMatch);
-      if (state.metaStatus !== 200) return new Response("upstream down", { status: state.metaStatus });
+      const hold = state.holdNextMeta;
+      state.holdNextMeta = undefined;
+      const answer = metaAnswer(ifNoneMatch);
+      if (hold) await hold;
+      return answer;
+    }
+    const compare = /^\/repos\/acme\/widgets\/compare\/(.+)\.\.\.([0-9a-f]{40})$/.exec(url.pathname);
+    if (compare) {
+      state.calls.compare++;
+      const base = decodeURIComponent(compare[1]!);
+      const head = compare[2]!;
+      if (!visible() || !state.history[base] || !state.trees[head]) return Response.json({ message: "Not Found" }, { status: 404 });
+      const history = state.history[base]!;
+      const status = history[0] === head ? "identical" : history.includes(head) ? "behind" : "diverged";
+      return Response.json({ status, ahead_by: status === "diverged" ? 1 : 0, commits: [], files: [] });
+    }
+    const heads = /^\/repos\/acme\/widgets\/commits\/([0-9a-f]{40})\/branches-where-head$/.exec(url.pathname);
+    if (heads) {
+      state.calls.branchesWhereHead++;
       if (!visible()) return notFound();
-      if (ifNoneMatch === etag()) {
-        state.calls.notModified++;
-        return new Response(null, { status: 304, headers: { ETag: etag() } });
-      }
-      return Response.json(
-        {
-          id: state.id,
-          full_name: "acme/widgets",
-          private: state.private,
-          visibility: state.private ? "private" : "public",
-          default_branch: "main",
-          description: DESCRIPTION,
-          size: 10,
-          topics: ["synthetic"],
-        },
-        { headers: { ETag: etag() } },
-      );
+      if (!state.trees[heads[1]!]) return Response.json({ message: "No commit found" }, { status: 422 });
+      return Response.json(Object.entries(state.branches).filter(([, sha]) => sha === heads[1]).map(([name]) => ({ name })));
     }
     const commit = /^\/repos\/acme\/widgets\/commits\/(.+)$/.exec(url.pathname);
     if (commit) {
       state.calls.commit++;
-      const sha = visible() ? state.branches[decodeURIComponent(commit[1]!)] : undefined;
+      const name = decodeURIComponent(commit[1]!);
+      // Like GitHub: branch names resolve in this repository, full SHAs anywhere in the fork network.
+      const sha = visible() ? (state.branches[name] ?? state.pulls[name] ?? (state.trees[name] ? name : undefined)) : undefined;
       const res = sha ? new Response(sha) : Response.json({ message: "No commit found" }, { status: 422 });
       state.afterContent?.();
       return res;
@@ -188,14 +227,14 @@ describe("a repository that turns private", () => {
   it("is refused when it turns private while its tree is being fetched", async () => {
     const routes = await loadRoutes();
     github.state.afterContent = () => (github.state.private = true);
-    await expectDenied(await routes.tree(PRIVATE_SHA));
+    await expectDenied(await routes.tree(PRIVATE_SHA, "&ref=secret-branch"));
     expect(github.state.calls.tree).toBe(1);
     expect(edge.store.size).toBe(0);
     // And nothing from that attempt is reused once it is public again.
     github.state.afterContent = undefined;
     github.state.private = false;
     github.state.trees[PRIVATE_SHA] = [PUBLIC_PATH];
-    const res = await routes.tree(PRIVATE_SHA);
+    const res = await routes.tree(PRIVATE_SHA, "&ref=secret-branch");
     expect(res.status).toBe(200);
     expect(await res.text()).not.toContain(PRIVATE_PATH);
   });
@@ -242,11 +281,14 @@ describe("a different repository at the same owner/name", () => {
     github.state.id = 2002;
     github.state.trees = {};
     github.state.branches = { main: PRIVATE_SHA };
+    github.state.history = { main: [PRIVATE_SHA] };
 
     const res = await routes.tree();
     expect(res.status).toBe(404);
     expect(await res.text()).not.toContain(PUBLIC_PATH);
-    expect(github.state.calls.tree).toBe(2); // looked up again under the new identity
+    // Checked again under the new identity, and the old commit isn't part of it, so its tree is never fetched.
+    expect(github.state.calls.compare).toBe(2);
+    expect(github.state.calls.tree).toBe(1);
     const summary = await routes.repo();
     expect((await summary.json()).commitSha).toBe(PRIVATE_SHA);
   });
@@ -303,7 +345,7 @@ describe("response caching policy", () => {
     expect(await res.text()).not.toContain(PRIVATE_PATH);
     const keys = [...edge.store.keys()].filter((k) => k !== legacyUrl);
     expect(keys).toHaveLength(1);
-    expect(keys[0]).toContain("/__edge/v2/tree/1001/");
+    expect(keys[0]).toContain("/__edge/v3/tree/1001/");
   });
 
   it("does not edge-cache a refusal", async () => {
@@ -363,5 +405,145 @@ describe("public repositories keep working", () => {
     expect(body).toMatchObject({ fullName: "acme/widgets", ref: "main", commitSha: PUBLIC_SHA });
     expect(body).not.toHaveProperty("id");
     expect(body).not.toHaveProperty("isPrivate");
+  });
+});
+
+describe("commits from elsewhere in the fork network", () => {
+  it("are refused before their tree is fetched, exactly like a commit that doesn't exist", async () => {
+    const routes = await loadRoutes();
+    const res = await routes.tree(FORK_SHA);
+    expect(res.status).toBe(404);
+    expect(res.headers.get("Cache-Control")).toBe("no-store");
+    const text = await res.text();
+    expect(text).not.toContain(FORK_PATH);
+    expect(JSON.parse(text).error.code).toBe("REF_NOT_FOUND");
+    expect(github.state.calls.tree).toBe(0);
+    expect(edge.store.size).toBe(0);
+    expect(await (await routes.tree("1".repeat(40))).text()).toBe(text);
+  });
+
+  it("can't be unlocked by passing a commit ID as the ref", async () => {
+    const routes = await loadRoutes();
+    expect((await routes.tree(FORK_SHA, `&ref=${FORK_SHA}`)).status).toBe(404);
+    expect((await routes.tree(FORK_SHA, `&ref=${FORK_SHA.slice(0, 7)}`)).status).toBe(404);
+    expect(github.state.calls.tree).toBe(0);
+  });
+
+  it("are refused as a summary ref", async () => {
+    const routes = await loadRoutes();
+    const res = await routes.repo(`acme/widgets@${FORK_SHA}`);
+    expect(res.status).toBe(404);
+    expect((await res.json()).error.code).toBe("REF_NOT_FOUND");
+  });
+
+  it("doesn't get in the way of commits on the default branch or on the branch they came from", async () => {
+    const routes = await loadRoutes();
+    expect((await routes.repo(`acme/widgets@${PUBLIC_SHA}`)).status).toBe(200);
+    expect((await routes.tree(PUBLIC_SHA)).status).toBe(200);
+    expect((await routes.tree(PRIVATE_SHA)).status).toBe(200); // not on main, but the head of secret-branch
+    const res = await routes.tree(PRIVATE_SHA, "&ref=secret-branch");
+    expect(res.status).toBe(200);
+    expect(await res.text()).toContain(PRIVATE_PATH);
+  });
+});
+
+describe("one tree fetch per commit", () => {
+  it("derives every building budget from a single tree fetch and proof", async () => {
+    const routes = await loadRoutes();
+    for (const budget of [200, 6000, 15000]) {
+      const res = await routes.tree(PUBLIC_SHA, `&budget=${budget}`);
+      expect(res.status).toBe(200);
+      expect((await res.json()).budget).toBe(budget);
+    }
+    expect(github.state.calls.tree).toBe(1);
+    expect(github.state.calls.compare).toBe(1);
+    expect(github.state.calls.repo).toBe(4); // still checked on every request, plus the recheck after the one fetch
+  });
+});
+
+describe("concurrent requests", () => {
+  it("share one visibility check", async () => {
+    const routes = await loadRoutes();
+    const responses = await Promise.all([routes.tree(), routes.tree(), routes.tree()]);
+    for (const res of responses) expect(res.status).toBe(200);
+    expect(github.state.calls.repo).toBe(2); // one shared check, plus the recheck after the single tree fetch
+  });
+
+  it("never reuse an earlier check for the recheck after a content read", async () => {
+    await loadRoutes();
+    const gh = await import("@/server/github");
+    const meta = await gh.requirePublicRepo("acme", "widgets");
+    // Another request's check is in flight; GitHub answered it "public" on arrival...
+    let release!: () => void;
+    github.state.holdNextMeta = new Promise<void>((resolve) => (release = resolve));
+    const earlier = gh.requirePublicRepo("acme", "widgets");
+    // ...and then the repository turns private while the tree is being read.
+    github.state.private = true;
+    const tree = gh.getRepoTree(meta, PUBLIC_SHA, 6000);
+    setTimeout(release, 20);
+    await expect(tree).rejects.toMatchObject({ code: "NOT_FOUND" });
+    await expect(earlier).resolves.toMatchObject({ id: 1001 });
+  });
+
+  it("start a fresh check once the one in flight is over a second old", async () => {
+    await loadRoutes();
+    const gh = await import("@/server/github");
+    let release!: () => void;
+    github.state.holdNextMeta = new Promise<void>((resolve) => (release = resolve));
+    const slow = gh.requirePublicRepo("acme", "widgets");
+    vi.setSystemTime(Date.now() + 1_001);
+    github.state.private = true;
+    const later = gh.requirePublicRepo("acme", "widgets");
+    release();
+    await expect(slow).resolves.toMatchObject({ id: 1001 });
+    await expect(later).rejects.toMatchObject({ code: "NOT_FOUND" });
+    expect(github.state.calls.repo).toBe(2);
+  });
+});
+
+describe("proof edge cases", () => {
+  it("doesn't trust pull request refs, which point at commits in other forks", async () => {
+    const routes = await loadRoutes();
+    for (const ref of ["pull/7/head", "refs/pull/7/head"]) {
+      github.state.history[ref] = [FORK_SHA];
+      github.state.pulls[ref] = FORK_SHA;
+    }
+    for (const ref of ["pull/7/head", "refs/pull/7/head"]) {
+      expect((await routes.tree(FORK_SHA, `&ref=${encodeURIComponent(ref)}`)).status).toBe(404);
+    }
+    expect((await routes.repo("acme/widgets@pull/7/head")).status).toBe(404);
+    expect(github.state.calls.tree).toBe(0);
+  });
+
+  it("accepts a pasted commit ID that is the head of a non-default branch", async () => {
+    const routes = await loadRoutes();
+    const res = await routes.repo(`acme/widgets@${PRIVATE_SHA}`);
+    expect(res.status).toBe(200);
+    expect((await res.json()).commitSha).toBe(PRIVATE_SHA);
+    expect((await routes.tree(PRIVATE_SHA, `&ref=${PRIVATE_SHA}`)).status).toBe(200);
+  });
+
+  it("compares against the ref the commit came from before the default branch", async () => {
+    const routes = await loadRoutes();
+    expect((await routes.tree(PRIVATE_SHA, "&ref=secret-branch")).status).toBe(200);
+    expect(github.state.calls.compare).toBe(1);
+  });
+
+  it("doesn't let a request without the ref fail a concurrent one that has it", async () => {
+    const routes = await loadRoutes();
+    github.state.branches = { main: PUBLIC_SHA }; // PRIVATE_SHA is in secret-branch's history but no longer its head
+    github.state.history["secret-branch"] = ["0".repeat(40), PRIVATE_SHA];
+    const [without, withRef] = await Promise.all([routes.tree(PRIVATE_SHA), routes.tree(PRIVATE_SHA, "&ref=secret-branch")]);
+    expect(without.status).toBe(404);
+    expect(withRef.status).toBe(200);
+  });
+
+  it("can't reach tree entries stored before commits had to be proven", async () => {
+    const routes = await loadRoutes();
+    const legacy = Response.json({ files: [{ path: FORK_PATH, size: 1 }] }, { headers: { "Cache-Control": "public, s-maxage=86400" } });
+    await edge.put(new Request(`https://gitcity.test/__edge/v2/tree/1001/${FORK_SHA}/6000`), legacy);
+    const res = await routes.tree(FORK_SHA);
+    expect(res.status).toBe(404);
+    expect(await res.text()).not.toContain(FORK_PATH);
   });
 });

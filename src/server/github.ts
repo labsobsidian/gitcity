@@ -2,7 +2,7 @@
  * GitHub REST client (server-only: it reads GITHUB_TOKEN). Every response is
  * shape-checked before use and every body is read with a size cap.
  */
-import { normalizeTree, type RawTreeEntry } from "@/lib/github/normalize";
+import { budgetTree, prepareTree, type PreparedTree, type RawTreeEntry } from "@/lib/github/normalize";
 import type { RepoSummary, RepoTree } from "@/lib/types";
 import { TtlCache } from "./cache";
 import { AppError } from "./errors";
@@ -30,7 +30,7 @@ export interface GitHubOptions {
   fetchImpl?: typeof fetch;
 }
 
-type Context = "repo" | "commit" | "tree";
+type Context = "repo" | "commit" | "tree" | "compare";
 
 function encodePath(value: string): string {
   return value.split("/").map(encodeURIComponent).join("/");
@@ -77,6 +77,14 @@ function notFound(): AppError {
   return new AppError("NOT_FOUND", NOT_FOUND_MESSAGE);
 }
 
+/**
+ * Also the answer for a commit that exists but isn't part of this
+ * repository's history (see proveCommit), so the two can't be told apart.
+ */
+function refNotFound(): AppError {
+  return new AppError("REF_NOT_FOUND", "That branch, tag or commit doesn't exist in this repository.");
+}
+
 async function toError(res: Response, context: Context): Promise<AppError> {
   let message = "";
   try {
@@ -99,15 +107,11 @@ async function toError(res: Response, context: Context): Promise<AppError> {
       console.error("[gitcity] GitHub rejected GITHUB_TOKEN (401)");
       return new AppError("UPSTREAM", "GitHub rejected this server's credentials. The site owner needs to update the token.");
     case 404:
-      return context === "commit"
-        ? new AppError("REF_NOT_FOUND", "That branch, tag or commit doesn't exist in this repository.")
-        : notFound();
+      return context === "commit" || context === "compare" ? refNotFound() : notFound();
     case 409:
       return new AppError("EMPTY", "This repository is empty, so there's nothing to build yet.");
     case 422:
-      return context === "commit"
-        ? new AppError("REF_NOT_FOUND", "That branch, tag or commit doesn't exist in this repository.")
-        : new AppError("BAD_RESPONSE", "GitHub couldn't process this request.");
+      return context === "repo" ? new AppError("BAD_RESPONSE", "GitHub couldn't process this request.") : refNotFound();
     case 403:
     case 451:
       return new AppError("FORBIDDEN", "GitHub isn't serving this repository (it may be disabled or blocked).");
@@ -244,7 +248,7 @@ function parseRepoMeta(body: unknown): RepoMeta {
 
 export async function fetchCommitSha(owner: string, repo: string, ref: string, opts: GitHubOptions): Promise<string> {
   const res = await request(
-    `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/commits/${encodePath(ref)}`,
+    `${repoPath(owner, repo)}/commits/${encodePath(ref)}`,
     "commit",
     opts,
     "application/vnd.github.sha",
@@ -261,7 +265,7 @@ export async function fetchTree(
   opts: GitHubOptions,
 ): Promise<{ entries: RawTreeEntry[]; truncated: boolean }> {
   const res = await request(
-    `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/git/trees/${commitSha}?recursive=1`,
+    `${repoPath(owner, repo)}/git/trees/${commitSha}?recursive=1`,
     "tree",
     opts,
   );
@@ -283,6 +287,33 @@ export async function fetchTree(
   return { entries, truncated: body.truncated === true };
 }
 
+/**
+ * GitHub's comparison of `head` against `base` ("identical", "behind",
+ * "ahead" or "diverged"). Only the status is used; a large comparison is
+ * refused by the size cap rather than buffered.
+ */
+export async function fetchCompareStatus(
+  owner: string,
+  repo: string,
+  base: string,
+  head: string,
+  opts: GitHubOptions,
+): Promise<string> {
+  const res = await request(`${repoPath(owner, repo)}/compare/${encodePath(base)}...${encodePath(head)}?per_page=1`, "compare", opts);
+  const body = await readJson(res, MAX_JSON_BYTES);
+  const status = isRecord(body) ? str(body.status) : null;
+  if (!status) throw badShape("compare");
+  return status;
+}
+
+/** Names of this repository's branches whose head is `sha`. */
+export async function fetchBranchesWhereHead(owner: string, repo: string, sha: string, opts: GitHubOptions): Promise<string[]> {
+  const res = await request(`${repoPath(owner, repo)}/commits/${sha}/branches-where-head`, "compare", opts);
+  const body = await readJson(res, MAX_JSON_BYTES);
+  if (!Array.isArray(body)) throw badShape("branch");
+  return body.flatMap((branch) => (isRecord(branch) && typeof branch.name === "string" ? [branch.name] : []));
+}
+
 // ---------------------------------------------------------------------------
 // Cached service layer used by the route handlers.
 
@@ -293,11 +324,23 @@ export async function fetchTree(
  * (same ID, still public) lets it be reused. Private answers are never stored.
  */
 const validators = new TtlCache<{ meta: RepoMeta; etag: string }>(500);
+/** Visibility checks in flight, so a burst of requests for one repository shares a single GitHub call. */
+const visibilityChecks = new Map<string, { startedAt: number; check: Promise<RepoMeta> }>();
 const shaCache = new TtlCache<string>(500);
+/** Commits proven to be part of a repository's own history, by repository ID + SHA. */
+const provenCommits = new TtlCache<true>(500);
+/** Filtered file listing per commit, so each building budget is derived without fetching the tree again. */
+const preparedTrees = new TtlCache<PreparedTree & { truncated: boolean }>(2); // can be large; a Worker isolate has 128 MB
 const treeCache = new TtlCache<RepoTree>(48);
 
 const VALIDATOR_TTL = 60 * 60_000;
 const TRANSIENT = new Set<string>(["TIMEOUT", "NETWORK", "UPSTREAM", "RATE_LIMITED"]);
+/**
+ * How old an in-flight visibility check may be for a new request to share
+ * it. Sharing means a request can be answered by a check GitHub received up
+ * to this long before the request arrived.
+ */
+const MAX_SHARED_CHECK_AGE_MS = 1_000;
 const SHA_TTL = 60_000;
 const TREE_TTL = 6 * 60 * 60_000; // keyed by repository ID + commit SHA, so it never goes stale
 
@@ -311,9 +354,26 @@ function options(): GitHubOptions {
  * token's primary rate limit) and throws NOT_FOUND unless the repository is
  * public right now. The server token may be able to read private
  * repositories, so their metadata is checked before parsing and never kept.
+ *
+ * Concurrent calls share one check if it started within
+ * MAX_SHARED_CHECK_AGE_MS; `share: false` always starts a new one (used for
+ * the recheck after a content read, which must postdate the read).
  */
-export async function requirePublicRepo(owner: string, repo: string): Promise<RepoMeta> {
+export function requirePublicRepo(owner: string, repo: string, { share = true }: { share?: boolean } = {}): Promise<RepoMeta> {
   const key = `${owner}/${repo}`.toLowerCase();
+  const pending = visibilityChecks.get(key);
+  if (share && pending && Date.now() - pending.startedAt <= MAX_SHARED_CHECK_AGE_MS) return pending.check;
+  const check = checkVisibility(key, owner, repo);
+  const entry = { startedAt: Date.now(), check };
+  visibilityChecks.set(key, entry);
+  const done = () => {
+    if (visibilityChecks.get(key) === entry) visibilityChecks.delete(key);
+  };
+  check.then(done, done);
+  return check;
+}
+
+async function checkVisibility(key: string, owner: string, repo: string): Promise<RepoMeta> {
   const known = validators.get(key);
   try {
     const res = await request(repoPath(owner, repo), "repo", options(), undefined, known?.etag);
@@ -339,34 +399,110 @@ export async function requirePublicRepo(owner: string, repo: string): Promise<Re
  * have been able to read it anyway.
  */
 async function confirmStillPublic(meta: RepoMeta): Promise<void> {
-  const now = await requirePublicRepo(meta.owner, meta.repo);
+  const now = await requirePublicRepo(meta.owner, meta.repo, { share: false });
   if (now.id !== meta.id) throw notFound();
+}
+
+/** Looks like a (possibly abbreviated) commit ID rather than a branch or tag name. */
+const COMMIT_ID = /^[0-9a-f]{4,40}$/i;
+/** GitHub keeps pull request heads (commits from forks) under refs/pull/ in the base repository. */
+const FOREIGN_REF = /^(?:refs\/)?pull\//i;
+
+/**
+ * A branch or tag name GitHub resolves within this repository only, so the
+ * commit it points to belongs to it. Commit IDs resolve anywhere in the fork
+ * network, and refs/pull/* point at commits in other forks.
+ */
+function isOwnRefName(ref: string): boolean {
+  return !COMMIT_ID.test(ref) && !FOREIGN_REF.test(ref) && (!ref.startsWith("refs/") || /^refs\/(?:heads|tags)\//.test(ref));
+}
+
+/**
+ * GitHub serves any commit in a repository's fork network by SHA, including
+ * commits that only exist in other forks, and in some cases commits made in
+ * private repositories of that network. A SHA is only accepted when it is
+ * reachable from the branch or tag it was resolved from or from the default
+ * branch, or is the head of one of this repository's branches. Anything else
+ * is REF_NOT_FOUND, the same as a commit that doesn't exist.
+ */
+async function proveCommit(meta: RepoMeta, sha: string, ref: string | undefined, opts: GitHubOptions): Promise<void> {
+  const key = `${meta.id}@${sha}`;
+  if (provenCommits.get(key)) return;
+  // The ref the SHA came from first: usually "identical", a tiny response,
+  // where a diverged comparison against the default branch can be large.
+  const bases = ref && isOwnRefName(ref) && ref !== meta.defaultBranch ? [ref, meta.defaultBranch] : [meta.defaultBranch];
+  let proven = false;
+  for (const base of bases) {
+    if (await reachableFrom(meta, base, sha, opts)) {
+      proven = true;
+      break;
+    }
+  }
+  // A pasted commit URL names no branch; accept it when it is a branch head.
+  if (!proven) {
+    try {
+      proven = (await fetchBranchesWhereHead(meta.owner, meta.repo, sha, opts)).length > 0;
+    } catch (error) {
+      if (!(error instanceof AppError && error.code === "REF_NOT_FOUND")) throw error;
+    }
+  }
+  if (proven) {
+    provenCommits.set(key, true, TREE_TTL);
+    return;
+  }
+  // A repository that turned private meanwhile gets NOT_FOUND, like every other refusal.
+  await confirmStillPublic(meta);
+  throw refNotFound();
+}
+
+async function reachableFrom(meta: RepoMeta, base: string, sha: string, opts: GitHubOptions): Promise<boolean> {
+  try {
+    // "behind": `sha` is an ancestor of `base`; "identical": it is `base`.
+    const status = await fetchCompareStatus(meta.owner, meta.repo, base, sha, opts);
+    return status === "identical" || status === "behind";
+  } catch (error) {
+    // Unknown commits and oversized comparisons mean "not proven".
+    if (error instanceof AppError && (error.code === "REF_NOT_FOUND" || error.code === "TOO_LARGE")) return false;
+    throw error;
+  }
 }
 
 /** `ref` is resolved by the caller (requested ref or the default branch) so it matches the edge key. */
 export async function getRepoSummary(meta: RepoMeta, ref: string): Promise<RepoSummary> {
   const opts = options();
-  // Always resolve through GitHub, even for SHAs: it validates that the commit
-  // belongs to this repository and expands abbreviated SHAs.
-  // Git refs are case-sensitive (`Main` and `main` can both exist), so the key keeps the ref as given.
+  // Always resolve through GitHub, even for full SHAs: it expands abbreviated
+  // SHAs and rejects unknown commits. Git refs are case-sensitive (`Main` and
+  // `main` can both exist), so the key keeps the ref as given.
   const commitSha = await shaCache.getOrLoad(`${meta.id}@${ref}`, SHA_TTL, async () => {
     const sha = await fetchCommitSha(meta.owner, meta.repo, ref, opts);
     await confirmStillPublic(meta);
+    if (!isOwnRefName(ref)) await proveCommit(meta, sha, undefined, opts);
     return sha;
   });
   const { id: _id, isPrivate: _private, ...summary } = meta;
   return { ...summary, ref, commitSha };
 }
 
-export async function getRepoTree(meta: RepoMeta, commitSha: string, budget: number): Promise<RepoTree> {
+/**
+ * `ref` is the branch or tag the SHA was resolved from, if any. It only
+ * widens which history the SHA may come from; it doesn't change the response,
+ * so it isn't part of any cache key.
+ */
+export async function getRepoTree(meta: RepoMeta, commitSha: string, budget: number, ref?: string): Promise<RepoTree> {
   const opts = options();
-  return treeCache.getOrLoad(`${meta.id}@${commitSha}#${budget}`.toLowerCase(), TREE_TTL, async () => {
-    const { entries, truncated } = await fetchTree(meta.owner, meta.repo, commitSha, opts);
-    await confirmStillPublic(meta);
-    const { files, stats, simplified } = normalizeTree(entries, budget);
+  // Before anything is fetched, so an unproven commit's tree is never read; and
+  // outside the shared load below, whose callers may have come with other refs.
+  await proveCommit(meta, commitSha, ref, opts);
+  return treeCache.getOrLoad(`${meta.id}@${commitSha}#${budget}`, TREE_TTL, async () => {
+    const prepared = await preparedTrees.getOrLoad(`${meta.id}@${commitSha}`, TREE_TTL, async () => {
+      const { entries, truncated } = await fetchTree(meta.owner, meta.repo, commitSha, opts);
+      await confirmStillPublic(meta);
+      return { ...prepareTree(entries), truncated };
+    });
+    const { files, stats, simplified } = budgetTree(prepared, budget);
     if (files.length === 0) {
       throw new AppError("EMPTY", "No source files were found after skipping dependencies, binaries and generated output.");
     }
-    return { fullName: meta.fullName, commitSha, truncated, simplified, budget, files, stats };
+    return { fullName: meta.fullName, commitSha, truncated: prepared.truncated, simplified, budget, files, stats };
   });
 }

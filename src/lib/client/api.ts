@@ -44,7 +44,7 @@ export async function fetchSummary(ref: RepoRef, signal: AbortSignal): Promise<R
 
 /** Download the tree, reporting bytes received so the loading screen can show real progress. */
 export async function fetchTree(summary: RepoSummary, signal: AbortSignal, onProgress: (bytes: number) => void): Promise<RepoTree> {
-  const params = new URLSearchParams({ owner: summary.owner, repo: summary.repo, sha: summary.commitSha });
+  const params = new URLSearchParams({ owner: summary.owner, repo: summary.repo, sha: summary.commitSha, ref: summary.ref });
   const res = await send(`/api/tree?${params}`, signal);
   if (!res.body) return (await res.json()) as RepoTree;
   const reader = res.body.getReader();
